@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Argus</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="header">
+      <div class="logo">🎯 Argus</div>
+      <div class="status" id="status">
+        <span class="status-dot"></span>
+        <span class="status-text">Checking...</span>
+      </div>
+    </header>
+
+    <section class="stats" id="stats">
+      <div class="stat">
+        <span class="stat-value" id="stat-messages">-</span>
+        <span class="stat-label">Messages</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="stat-events">-</span>
+        <span class="stat-label">Events</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="stat-triggers">-</span>
+        <span class="stat-label">Triggers</span>
+      </div>
+    </section>
+
+    <section class="events" id="events">
+      <h3>Recent Events</h3>
+      <div class="events-list" id="events-list">
+        <p class="loading">Loading...</p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <a href="http://localhost:3000" target="_blank">Open Dashboard</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+# Docker Compose for Redis + Postgres only
+# Run Evolution API with: cd evolution-api && npm run dev
+# Run Argus app with: cd argus && npm run dev
+
+services:
+  # Redis for Evolution API caching
+  redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for Evolution API
+  postgres:
+    image: postgres:16-alpine
+    container_name: evolution-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=evolution
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

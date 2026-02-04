@@ -1,0 +1,85 @@
+ALWAYS USE THIS FILE FOR RULES
+
+## Project Location
+- Main code: `./argus/`
+- Documentation: `./INFO.md`, `./aidata/`
+
+## Changelog
+MAINTAIN a changelog file : APPEND only : AT TOP OF FILE : `argus/CHANGELOG.md`
+
+## Environment
+- DO NOT DELETE ANYTHING FROM .ENV : MARK AS IGNORE IF NOT IN USE
+- DO NOT USE OPENAI EMBEDDINGS ANYMORE : MARK AS IGNORE IF IN .ENV
+- Copy `.env.example` to `.env` for new setups
+
+## Documentation
+- KEEP README FILE UP TO DATE
+- DO NOT EDIT ANYTHING IN `aidata/*` FILES
+- Only edit: README.md, RULES.md, CHANGELOG.md, INFO.md
+
+## Development Commands
+```bash
+cd argus
+
+# Development
+npm install          # Install dependencies
+npm run dev          # Start with hot reload
+npm test             # Fast tests (~2s)
+npm run lint         # Lint code (cached)
+npm run format       # Format code
+npm run typecheck    # Type check
+
+# Production
+npm run build        # Build TypeScript
+npm start            # Run production
+
+# Docker
+docker-compose up -d # Start all services
+```
+
+## Chrome Extension
+```bash
+# Convert SVG to PNG (if icons change)
+cd argus/extension/icons
+convert -background none icon.svg -resize 16x16 icon16.png
+convert -background none icon.svg -resize 32x32 icon32.png
+convert -background none icon.svg -resize 48x48 icon48.png
+convert -background none icon.svg -resize 128x128 icon128.png
+
+# Load extension:
+# 1. chrome://extensions/
+# 2. Enable Developer mode
+# 3. Load unpacked → select argus/extension/
+```
+
+## Architecture Constraints
+- SQLite + FTS5 ONLY (no FAISS, no vectors)
+- Gemini 3 Flash Preview (no OpenAI for LLM)
+- 90-day hot window for context
+- Single container per user
+- URL detection only (no DOM reading)
+
+## Testing Strategy
+- Vitest with single fork (fast)
+- Dot reporter (minimal output)
+- Cache enabled for speed
+- Target: <3s test runs
+
+## Docker Images (Pre-built)
+```yaml
+node:22-alpine              # Argus runtime
+atendai/evolution-api:v2.1.1 # WhatsApp bridge
+postgres:16-alpine          # Evolution DB
+```
+
+## API Endpoints
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| /api/health | GET | Health check |
+| /api/stats | GET | Get statistics |
+| /api/events | GET | List events |
+| /api/events/:id/complete | POST | Mark done |
+| /api/webhook/whatsapp | POST | WhatsApp webhook |
+| /api/context-check | POST | Check URL context |
+| /ws | WS | Real-time notifications |
+
