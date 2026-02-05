@@ -2,6 +2,22 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.3.2] - 2026-02-05
+
+### Fixed
+- **Duplicate popups** - Server now sends ONLY ONE notification per event (not both notification + conflict_warning)
+- **Scheduler popup types** - Now sends correct message type based on popupType (trigger for reminders, notification for snooze)
+
+### Tested
+- All 7 Gemini event types working:
+  - `meeting` - "Team standup tomorrow at 10am"
+  - `deadline` - "Project deadline Friday 5pm"
+  - `reminder` - "Don't forget to call grandma"
+  - `travel` - "Trip to Manali next month"
+  - `task` - "Buy groceries, pick up laundry"
+  - `subscription` - "Cancel Spotify subscription"
+  - `recommendation` - "Try biryani at Meghana Foods"
+
 ## [2.3.1] - 2026-02-05
 
 ### Fixed
