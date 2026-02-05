@@ -126,9 +126,29 @@ async function sendToActiveTab(message) {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tabs[0] && tabs[0].id && !tabs[0].url?.startsWith('chrome://')) {
       console.log('[Argus] Sending to tab:', tabs[0].id, message.type);
-      await chrome.tabs.sendMessage(tabs[0].id, message);
-      console.log('[Argus] Message sent successfully');
-      return true;
+      
+      try {
+        await chrome.tabs.sendMessage(tabs[0].id, message);
+        console.log('[Argus] Message sent successfully');
+        return true;
+      } catch (err) {
+        // Content script might not be injected yet, try to inject it
+        console.log('[Argus] Content script not ready, injecting:', err.message);
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            files: ['content.js']
+          });
+          // Wait a bit for script to load
+          await new Promise(resolve => setTimeout(resolve, 100));
+          // Try sending again
+          await chrome.tabs.sendMessage(tabs[0].id, message);
+          console.log('[Argus] Message sent after injection');
+          return true;
+        } catch (injectErr) {
+          console.log('[Argus] Failed to inject content script:', injectErr.message);
+        }
+      }
     }
   } catch (err) {
     console.log('[Argus] Could not send to tab:', err.message);
@@ -216,24 +236,34 @@ async function checkCurrentUrl(url, title) {
   }
 }
 
-const debouncedUrlCheck = debounce(checkCurrentUrl, 1000);
+const debouncedUrlCheck = debounce(checkCurrentUrl, 300);
 
 // ============ TAB LISTENERS ============
 
-chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
-  if (changeInfo.status === 'complete' && tab.url && tab.active) {
-    debouncedUrlCheck(tab.url, tab.title);
+chrome.tabs.onUpdated.addListener(async function(tabId, changeInfo, tab) {
+  // Check on complete status for any tab (not just active)
+  if (changeInfo.status === 'complete' && tab.url) {
+    console.log('[Argus] Tab updated:', tabId, tab.url);
+    
+    // Only check if this is the active tab
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTabs[0] && activeTabs[0].id === tabId) {
+      debouncedUrlCheck(tab.url, tab.title);
+    }
   }
 });
 
 chrome.tabs.onActivated.addListener(async function(activeInfo) {
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
-    if (tab.url) {
+    if (tab.url && tab.status === 'complete') {
+      console.log('[Argus] Tab activated:', activeInfo.tabId, tab.url);
+      // Clear last checked to force recheck
+      lastCheckedUrl = '';
       debouncedUrlCheck(tab.url, tab.title);
     }
   } catch (e) {
-    // Tab might be closed
+    console.log('[Argus] Tab activation error:', e.message);
   }
 });
 
