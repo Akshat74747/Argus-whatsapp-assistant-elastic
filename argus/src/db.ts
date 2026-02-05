@@ -242,9 +242,10 @@ export function getRecentEvents(days = 90, limit = 100): Event[] {
   return stmt.all(cutoff, limit) as Event[];
 }
 
-export function updateEventStatus(id: number, status: 'pending' | 'completed' | 'expired'): void {
+export function updateEventStatus(id: number, status: EventStatus): void {
   const stmt = getDb().prepare('UPDATE events SET status = ? WHERE id = ?');
   stmt.run(status, id);
+  console.log(`📝 [DB] Event ${id} status → ${status}`);
 }
 
 // ============ Search Operations ============
@@ -338,22 +339,49 @@ export function upsertContact(contact: Contact): void {
 }
 
 // ============ Stats ============
+// Event Status Types (proper lifecycle)
+// discovered → User hasn't acted yet (new from WhatsApp)
+// scheduled → User approved, will show context reminders & 1hr before reminders
+// snoozed → User said "later", will remind again after 30min
+// ignored → User doesn't care (hidden but not deleted)
+// reminded → 1-hour before reminder was shown
+// completed → User marked as done
+// expired → Event time passed without action
+export type EventStatus = 'discovered' | 'scheduled' | 'snoozed' | 'ignored' | 'reminded' | 'completed' | 'expired';
+
 export function getStats(): { 
   messages: number; 
   events: number; 
   triggers: number;
-  pendingEvents: number;
+  // New proper status counts
+  discoveredEvents: number;
+  scheduledEvents: number;
+  snoozedEvents: number;
+  ignoredEvents: number;
+  remindedEvents: number;
   completedEvents: number;
   expiredEvents: number;
+  // Legacy (for backwards compat)
+  pendingEvents: number;
 } {
   const db = getDb();
   const messages = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
   const events = (db.prepare('SELECT COUNT(*) as count FROM events').get() as { count: number }).count;
   const triggers = (db.prepare('SELECT COUNT(*) as count FROM triggers').get() as { count: number }).count;
-  const pendingEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'pending'").get() as { count: number }).count;
+  
+  // New status counts
+  const discoveredEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'discovered'").get() as { count: number }).count;
+  const scheduledEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'scheduled'").get() as { count: number }).count;
+  const snoozedEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'snoozed'").get() as { count: number }).count;
+  const ignoredEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'ignored'").get() as { count: number }).count;
+  const remindedEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'reminded'").get() as { count: number }).count;
   const completedEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'completed'").get() as { count: number }).count;
   const expiredEvents = (db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'expired'").get() as { count: number }).count;
-  return { messages, events, triggers, pendingEvents, completedEvents, expiredEvents };
+  
+  // Legacy - pendingEvents = discovered + snoozed (events needing attention)
+  const pendingEvents = discoveredEvents + snoozedEvents;
+  
+  return { messages, events, triggers, discoveredEvents, scheduledEvents, snoozedEvents, ignoredEvents, remindedEvents, completedEvents, expiredEvents, pendingEvents };
 }
 
 // ============ Message Queries ============
@@ -386,9 +414,22 @@ export function getAllMessages(options: {
 export function getAllEvents(options: {
   limit?: number;
   offset?: number;
-  status?: 'pending' | 'completed' | 'expired' | 'all';
+  status?: EventStatus | 'all' | 'active'; // 'active' = discovered + scheduled + snoozed
 }): (Event & { source_message?: string; source_sender?: string })[] {
   const { limit = 50, offset = 0, status = 'all' } = options;
+  
+  // 'active' = all events needing attention (not ignored/completed/expired)
+  if (status === 'active') {
+    const stmt = getDb().prepare(`
+      SELECT e.*, m.content as source_message, m.sender as source_sender
+      FROM events e
+      LEFT JOIN messages m ON e.message_id = m.id
+      WHERE e.status IN ('discovered', 'scheduled', 'snoozed', 'reminded')
+      ORDER BY e.created_at DESC
+      LIMIT ? OFFSET ?
+    `);
+    return stmt.all(limit, offset) as (Event & { source_message?: string; source_sender?: string })[];
+  }
   
   if (status !== 'all') {
     const stmt = getDb().prepare(`
@@ -496,16 +537,26 @@ export function markEventReminded(eventId: number): void {
 
 // Get events with context URL that match a given URL
 // Matches if URL contains the context_url keyword (case-insensitive)
+// Only returns SCHEDULED events (user must have approved them first)
 export function getContextEventsForUrl(url: string): Event[] {
   const urlLower = url.toLowerCase();
+  console.log(`🔎 [DB] getContextEventsForUrl: url="${url}"`);
+  
   const stmt = getDb().prepare(`
     SELECT * FROM events
     WHERE context_url IS NOT NULL 
     AND context_url != ''
-    AND status NOT IN ('completed', 'expired')
+    AND status = 'scheduled'
     AND LOWER(?) LIKE '%' || LOWER(context_url) || '%'
   `);
-  return stmt.all(urlLower) as Event[];
+  const results = stmt.all(urlLower) as Event[];
+  console.log(`📊 [DB] Query returned ${results.length} event(s) with status='scheduled'`);
+  if (results.length > 0) {
+    results.forEach(e => {
+      console.log(`   └─ Event #${e.id}: "${e.title}" (status: ${e.status}, context_url: ${e.context_url})`);
+    });
+  }
+  return results;
 }
 
 // Check for calendar conflicts with existing events
@@ -526,15 +577,18 @@ export function checkEventConflicts(eventTime: number, durationMinutes = 60): Ev
 
 // Dismiss a context event for a URL (can be temporary or permanent)
 export function dismissContextEvent(eventId: number, urlPattern: string, permanent = false): void {
+  console.log(`💾 [DB] dismissContextEvent: eventId=${eventId}, urlPattern="${urlPattern}", permanent=${permanent}`);
   if (permanent) {
     // Mark as completed (won't show again)
     updateEventStatus(eventId, 'completed');
+    console.log(`✅ [DB] Event ${eventId} permanently dismissed (status → completed)`);
   } else {
     // Increment dismiss count and store URL pattern for future reference
     const stmt = getDb().prepare(`
       UPDATE events SET dismiss_count = dismiss_count + 1 WHERE id = ?
     `);
     stmt.run(eventId);
+    console.log(`🕐 [DB] Event ${eventId} temporarily dismissed (dismiss_count incremented)`);
     
     // Store dismissal with URL pattern (if provided) for potential re-trigger logic
     if (urlPattern) {
@@ -567,6 +621,47 @@ export function setEventContextUrl(eventId: number, contextUrl: string): void {
     trigger_value: contextUrl,
     is_fired: false,
   });
+}
+
+// ============ Event Status Actions ============
+
+// Snooze event (remind again in 30 minutes)
+export function snoozeEvent(eventId: number, snoozeMinutes = 30): void {
+  const snoozeUntil = Math.floor(Date.now() / 1000) + (snoozeMinutes * 60);
+  const stmt = getDb().prepare(`
+    UPDATE events SET status = 'snoozed', reminder_time = ? WHERE id = ?
+  `);
+  stmt.run(snoozeUntil, eventId);
+  console.log(`💤 [DB] Event ${eventId} snoozed until ${new Date(snoozeUntil * 1000).toLocaleTimeString()}`);
+}
+
+// Ignore event (user doesn't care, but don't delete)
+export function ignoreEvent(eventId: number): void {
+  const stmt = getDb().prepare(`
+    UPDATE events SET status = 'ignored' WHERE id = ?
+  `);
+  stmt.run(eventId);
+  console.log(`🚫 [DB] Event ${eventId} ignored`);
+}
+
+// Complete event (user marked as done)
+export function completeEvent(eventId: number): void {
+  const stmt = getDb().prepare(`
+    UPDATE events SET status = 'completed' WHERE id = ?
+  `);
+  stmt.run(eventId);
+  console.log(`✅ [DB] Event ${eventId} completed`);
+}
+
+// Get snoozed events that are due
+export function getDueSnoozedEvents(): Event[] {
+  const now = Math.floor(Date.now() / 1000);
+  const stmt = getDb().prepare(`
+    SELECT * FROM events
+    WHERE status = 'snoozed' AND reminder_time IS NOT NULL AND reminder_time <= ?
+    ORDER BY reminder_time ASC
+  `);
+  return stmt.all(now) as Event[];
 }
 
 // Get events by status

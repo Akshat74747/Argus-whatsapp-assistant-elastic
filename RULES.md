@@ -4,6 +4,11 @@ ALWAYS USE THIS FILE FOR RULES
 - Main code: `./argus/`
 - Documentation: `./INFO.md`, `./aidata/`
 
+## Git Workflow
+- ALWAYS commit and push code after making changes
+- Use descriptive commit messages
+- Keep MD files (RULES.md, INFO.md, CHANGELOG.md) up to date with changes
+
 ## Changelog
 MAINTAIN a changelog file : APPEND only : AT TOP OF FILE : `argus/CHANGELOG.md`
 
@@ -77,9 +82,24 @@ postgres:16-alpine          # Evolution DB
 |----------|--------|---------|
 | /api/health | GET | Health check |
 | /api/stats | GET | Get statistics |
-| /api/events | GET | List events |
+| /api/events | GET | List events (filter by status) |
+| /api/events/:id/set-reminder | POST | Schedule event (discovered → scheduled) |
+| /api/events/:id/snooze | POST | Snooze event for X minutes |
+| /api/events/:id/ignore | POST | Ignore event (hide without delete) |
 | /api/events/:id/complete | POST | Mark done |
+| /api/events/:id/dismiss | POST | Dismiss notification |
+| /api/events/:id/acknowledge | POST | Acknowledge reminder |
+| /api/events/:id | DELETE | Delete event permanently |
 | /api/webhook/whatsapp | POST | WhatsApp webhook |
 | /api/context-check | POST | Check URL context |
 | /ws | WS | Real-time notifications |
+
+## Event Status Lifecycle
+```
+discovered → scheduled → reminded → completed
+         ↓           ↓
+      snoozed     snoozed
+         ↓           ↓
+      ignored     expired
+```
 

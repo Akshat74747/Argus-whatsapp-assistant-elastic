@@ -2,6 +2,73 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.3.1] - 2026-02-05
+
+### Fixed
+- **Chrome Popup buttons** - Changed from inline onclick to addEventListener with data-action attributes
+- **Dismiss loop bug** - Added dismissedEventIds and handledEventIds Sets to prevent popup reopening
+- **Content script actions** - Added schedule, snooze, ignore, complete actions to handleAction()
+- **Background.js message handlers** - Added SNOOZE_EVENT and IGNORE_EVENT handlers
+- **WebSocket auto-refresh** - Webapp now handles all event types: event_scheduled, event_snoozed, event_ignored, event_completed
+
+### Changed
+- **popup.js v2.2** - Buttons disable during API calls, auto-refresh every 5s
+- **content.js v2.2** - Tracks handled events to prevent re-showing
+- **background.js v2.3** - Better logging for all API calls
+
+## [2.3.0] - 2026-02-05
+
+### Added
+- **Proper Event Status System** - Complete lifecycle management with meaningful statuses:
+  - `discovered` → New event from WhatsApp (needs user action)
+  - `scheduled` → User approved, will show context reminders & 1hr before notifications
+  - `snoozed` → User said "later", will remind again in 30 minutes
+  - `ignored` → User doesn't care (hidden but not deleted)
+  - `reminded` → 1-hour before reminder was shown
+  - `completed` → User marked as done
+  - `expired` → Event time passed without action
+
+- **New Event Actions**:
+  - `📅 Schedule` - Approve event for reminders (discovered → scheduled)
+  - `💤 Snooze` - Remind again in 30 minutes (any → snoozed)
+  - `🚫 Ignore` - Hide event without deleting (discovered → ignored)
+  - `✅ Done` - Mark as completed (scheduled → completed)
+  - `↩️ Restore` - Bring back ignored event (ignored → scheduled)
+  - `🗑️ Delete` - Permanent removal (only for ignored/completed)
+
+- **API Endpoints**:
+  - `POST /api/events/:id/set-reminder` - Schedule event
+  - `POST /api/events/:id/snooze` - Snooze for X minutes
+  - `POST /api/events/:id/ignore` - Ignore event
+  - `POST /api/events/:id/complete` - Mark done
+  - `DELETE /api/events/:id` - Delete permanently
+
+- **Snooze Scheduler** - Background job checks every 30s for snoozed events that are due
+- **Extension host_permissions** - Changed from localhost-only to `<all_urls>` for popup on any tab
+- **Tab detection** - Popups now show on any active tab, not just localhost:3000
+
+### Changed
+- **Dashboard tabs** - New: 🆕 New | 📅 Active | 💤 Snoozed | ✅ Done | 🚫 Ignored | 📋 All
+- **Chrome popup tabs** - New: 🆕 New | 📅 Active | ✅ Done
+- **Stats** - pendingEvents now = discoveredEvents + snoozedEvents
+- **Action buttons** - Contextual based on event status (no delete for discovered)
+
+### Fixed
+- **Popup not appearing on external sites** - manifest.json host_permissions now `<all_urls>`
+- **Context reminders require approval** - Only shows for `scheduled` events
+- **Event flow clarity** - Removed ambiguous "pending" status
+
+### User Flow
+1. WhatsApp message → Event discovered → Popup on current tab
+2. User clicks "📅 Schedule" → Status = scheduled
+3. User visits netflix.com → Context reminder popup (only if scheduled)
+4. User clicks "✅ Done" → Status = completed
+
+OR
+
+1. User clicks "💤 Snooze" → Status = snoozed, reminder_time = now + 30min
+2. After 30 min → Scheduler re-shows popup, status → discovered
+
 ## [2.2.0] - 2026-02-05
 
 ### Added

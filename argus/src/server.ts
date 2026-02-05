@@ -6,11 +6,11 @@ import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, updateEventStatus, getEventsByStatus } from './db.js';
+import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent } from './db.js';
 import { initGemini } from './gemini.js';
 import { processWebhook } from './ingestion.js';
 import { matchContext, extractContextFromUrl } from './matcher.js';
-import { startScheduler, stopScheduler, completeEvent, checkContextTriggers } from './scheduler.js';
+import { startScheduler, stopScheduler, checkContextTriggers } from './scheduler.js';
 import { parseConfig, WhatsAppWebhookSchema, ContextCheckRequestSchema } from './types.js';
 import { 
   initEvolutionDb, 
@@ -145,11 +145,8 @@ app.get('/api/events', (req: Request, res: Response) => {
   const offset = parseInt(req.query.offset as string) || 0;
   const status = (req.query.status as string) || 'all';
   
-  const events = getAllEvents({ 
-    limit, 
-    offset, 
-    status: status as 'pending' | 'completed' | 'expired' | 'all' 
-  });
+  // Use EventStatus type for proper status filtering
+  const events = getAllEvents({ limit, offset, status: status as any });
   res.json(events);
 });
 
@@ -164,62 +161,88 @@ app.get('/api/events/:id', (req: Request, res: Response) => {
   res.json(event);
 });
 
-// Complete event
+// ============ Event Actions ============
+
+// Complete event (mark as done)
 app.post('/api/events/:id/complete', (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string);
-  completeEvent(id);
-  broadcast({ type: 'event_updated', eventId: id, status: 'completed' });
-  res.json({ success: true });
+  console.log(`✅ [COMPLETE] Event ${id} marked as done`);
+  dbCompleteEvent(id);
+  broadcast({ type: 'event_completed', eventId: id });
+  res.json({ success: true, message: 'Event completed' });
 });
 
-// Delete event (reject)
-app.delete('/api/events/:id', (req: Request, res: Response) => {
-  const id = parseInt(req.params.id as string);
-  deleteEvent(id);
-  broadcast({ type: 'event_deleted', eventId: id });
-  res.json({ success: true });
-});
-
-// ============ Enhanced Event Flow Endpoints ============
-
-// Set reminder for an event (user accepts in popup type 1)
-// Changes status from 'discovered' to 'scheduled' and sets reminder_time
+// Schedule event (approve for reminders)
 app.post('/api/events/:id/set-reminder', (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string);
   const event = getEventById(id);
   
   if (!event) {
+    console.log(`❌ [SCHEDULE] Event ${id} not found`);
     res.status(404).json({ error: 'Event not found' });
     return;
   }
   
+  console.log(`📅 [SCHEDULE] Event ${id}: "${event.title}" → scheduled`);
   scheduleEventReminder(id);
   broadcast({ type: 'event_scheduled', eventId: id });
-  res.json({ success: true, message: 'Reminder scheduled for 1 hour before event' });
+  res.json({ success: true, message: 'Event scheduled for reminders' });
 });
 
-// Dismiss event (temporary - can reappear for context triggers)
+// Snooze event (remind later - 30 minutes by default)
+app.post('/api/events/:id/snooze', (req: Request, res: Response) => {
+  const id = parseInt(req.params.id as string);
+  const { minutes } = req.body;
+  const snoozeMinutes = minutes || 30;
+  
+  console.log(`💤 [SNOOZE] Event ${id} snoozed for ${snoozeMinutes} minutes`);
+  snoozeEvent(id, snoozeMinutes);
+  broadcast({ type: 'event_snoozed', eventId: id, snoozeMinutes });
+  res.json({ success: true, message: `Event snoozed for ${snoozeMinutes} minutes` });
+});
+
+// Ignore event (user doesn't care, hide but don't delete)
+app.post('/api/events/:id/ignore', (req: Request, res: Response) => {
+  const id = parseInt(req.params.id as string);
+  console.log(`🚫 [IGNORE] Event ${id} ignored by user`);
+  ignoreEvent(id);
+  broadcast({ type: 'event_ignored', eventId: id });
+  res.json({ success: true, message: 'Event ignored' });
+});
+
+// Dismiss context reminder (temporary - will show again in 30 min)
 app.post('/api/events/:id/dismiss', (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string);
   const { permanent, urlPattern } = req.body;
   
+  console.log(`🔕 [DISMISS] Event ${id} context dismissed (permanent: ${permanent})`);
   dismissContextEvent(id, urlPattern || '', permanent === true);
   broadcast({ type: 'event_dismissed', eventId: id, permanent });
   res.json({ success: true });
 });
 
+// Delete event (permanent removal)
+app.delete('/api/events/:id', (req: Request, res: Response) => {
+  const id = parseInt(req.params.id as string);
+  console.log(`🗑️ [DELETE] Event ${id} permanently deleted`);
+  deleteEvent(id);
+  broadcast({ type: 'event_deleted', eventId: id });
+  res.json({ success: true, message: 'Event deleted' });
+});
+
+// ============ Legacy Endpoints (for backwards compat) ============
+
 // Acknowledge reminder (user saw 1-hour reminder)
 app.post('/api/events/:id/acknowledge', (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string);
-  // Status stays 'reminded' - user can still complete it later
   broadcast({ type: 'event_acknowledged', eventId: id });
   res.json({ success: true, message: 'Reminder acknowledged' });
 });
 
-// Mark event as done (final completion)
+// Done is same as complete
 app.post('/api/events/:id/done', (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string);
-  updateEventStatus(id, 'completed');
+  dbCompleteEvent(id);
   broadcast({ type: 'event_completed', eventId: id });
   res.json({ success: true, message: 'Event marked as done' });
 });
@@ -370,9 +393,12 @@ app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
 
     // Broadcast each event to WebSocket clients for overlay notifications
     if (result.eventsCreated > 0 && result.events) {
+      console.log(`✨ [WEBHOOK] Created ${result.eventsCreated} event(s) from message`);
       for (const event of result.events) {
+        console.log(`   └─ Event #${event.id}: "${event.title}" (type: ${event.event_type}, status: discovered, context_url: ${event.context_url || 'none'})`);
         // Send new event notification
         broadcast({ type: 'notification', event });
+        console.log(`📡 [WEBHOOK] Broadcasted discovery notification for event #${event.id}`);
         
         // If there are conflicts, also send a conflict warning
         if (event.conflicts && event.conflicts.length > 0) {
@@ -396,6 +422,7 @@ app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
 // Context check (from Chrome extension)
 app.post('/api/context-check', async (req: Request, res: Response) => {
   try {
+    console.log(`🔍 [CONTEXT-CHECK] Checking URL: ${req.body.url}`);
     const parsed = ContextCheckRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Invalid request', details: parsed.error.errors });
@@ -404,6 +431,12 @@ app.post('/api/context-check', async (req: Request, res: Response) => {
 
     // First check for URL-based context triggers (Netflix scenario)
     const contextTriggers = checkContextTriggers(parsed.data.url);
+    console.log(`📊 [CONTEXT-CHECK] Found ${contextTriggers.length} context trigger(s) for URL`);
+    if (contextTriggers.length > 0) {
+      contextTriggers.forEach(t => {
+        console.log(`   └─ Event #${t.id}: "${t.title}" (type: ${t.event_type}, context_url: ${t.location})`);
+      });
+    }
     
     if (contextTriggers.length > 0) {
       // Broadcast context reminders to all clients

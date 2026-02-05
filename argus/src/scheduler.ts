@@ -6,7 +6,8 @@ import {
   getDueReminders,
   markEventReminded,
   getContextEventsForUrl,
-  checkEventConflicts
+  checkEventConflicts,
+  getDueSnoozedEvents
 } from './db.js';
 
 // Extended notification with popup type
@@ -18,7 +19,7 @@ interface NotificationPayload {
   location?: string | null;
   event_type?: string;
   triggerType: string;
-  popupType: 'event_discovery' | 'event_reminder' | 'context_reminder' | 'conflict_warning' | 'insight_card';
+  popupType: 'event_discovery' | 'event_reminder' | 'context_reminder' | 'conflict_warning' | 'insight_card' | 'snooze_reminder';
   conflictingEvents?: Array<{ id: number; title: string; event_time: number | null }>;
 }
 
@@ -26,6 +27,7 @@ type NotifyCallback = (event: NotificationPayload) => void;
 
 let schedulerInterval: NodeJS.Timeout | null = null;
 let reminderInterval: NodeJS.Timeout | null = null;
+let snoozeInterval: NodeJS.Timeout | null = null;
 let notifyCallback: NotifyCallback | null = null;
 
 export function startScheduler(callback: NotifyCallback, intervalMs = 60000): void {
@@ -34,12 +36,14 @@ export function startScheduler(callback: NotifyCallback, intervalMs = 60000): vo
   // Run immediately
   checkTimeTriggers();
   checkDueReminders();
+  checkSnoozedEvents();
   
   // Then run periodically
   schedulerInterval = setInterval(checkTimeTriggers, intervalMs);
   reminderInterval = setInterval(checkDueReminders, 30000); // Check reminders every 30 seconds
+  snoozeInterval = setInterval(checkSnoozedEvents, 30000); // Check snoozed events every 30 seconds
   
-  console.log('⏰ Scheduler started (triggers every', intervalMs / 1000, 's, reminders every 30s)');
+  console.log('⏰ Scheduler started (triggers every', intervalMs / 1000, 's, reminders/snooze every 30s)');
 }
 
 export function stopScheduler(): void {
@@ -51,7 +55,37 @@ export function stopScheduler(): void {
     clearInterval(reminderInterval);
     reminderInterval = null;
   }
+  if (snoozeInterval) {
+    clearInterval(snoozeInterval);
+    snoozeInterval = null;
+  }
   console.log('⏰ Scheduler stopped');
+}
+
+// Check for snoozed events that are due
+function checkSnoozedEvents(): void {
+  const dueEvents = getDueSnoozedEvents();
+  
+  for (const event of dueEvents) {
+    if (notifyCallback && event.id) {
+      // Re-show the event discovery popup
+      notifyCallback({
+        id: event.id,
+        title: event.title,
+        description: event.description,
+        event_time: event.event_time,
+        location: event.location,
+        event_type: event.event_type,
+        triggerType: 'snooze',
+        popupType: 'event_discovery', // Show as discovery again so user can act
+      });
+      
+      console.log(`💤 Snoozed event due: ${event.title}`);
+      
+      // Change status back to discovered so it appears in "New" again
+      updateEventStatus(event.id, 'discovered');
+    }
+  }
 }
 
 // Check for 1-hour-before reminders
@@ -60,6 +94,7 @@ function checkDueReminders(): void {
   
   for (const event of dueReminders) {
     if (notifyCallback && event.id) {
+      // Broadcast to ALL clients so popup shows on any tab/window
       notifyCallback({
         id: event.id,
         title: event.title,

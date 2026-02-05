@@ -67,7 +67,11 @@
     th { color: var(--text-secondary); font-weight: 500; font-size: 0.85rem; position: sticky; top: 0; background: var(--bg-secondary); }
     tr:hover { background: var(--bg-tertiary); }
     .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 500; }
-    .badge-pending { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
+    .badge-discovered { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
+    .badge-scheduled { background: rgba(88, 166, 255, 0.2); color: var(--accent); }
+    .badge-snoozed { background: rgba(163, 113, 247, 0.2); color: var(--purple); }
+    .badge-ignored { background: rgba(110, 118, 129, 0.2); color: var(--text-secondary); }
+    .badge-reminded { background: rgba(163, 113, 247, 0.2); color: var(--purple); }
     .badge-completed { background: rgba(63, 185, 80, 0.2); color: var(--success); }
     .badge-expired { background: rgba(248, 81, 73, 0.2); color: var(--danger); }
     .badge-info { background: rgba(88, 166, 255, 0.2); color: var(--accent); }
@@ -77,6 +81,8 @@
     .btn-sm { padding: 4px 8px; font-size: 0.75rem; }
     .btn-success { background: var(--success); color: white; }
     .btn-danger { background: var(--danger); color: white; }
+    .btn-warning { background: var(--warning); color: black; }
+    .btn-secondary { background: var(--text-secondary); color: white; }
     .btn-primary { background: var(--accent); color: white; }
     .btn:hover { opacity: 0.8; transform: translateY(-1px); }
     .btn-group { display: flex; gap: 8px; }
@@ -167,10 +173,12 @@
       <section class="section" id="events">
         <div class="header"><h1>Events & Reminders</h1><div class="btn-group"><button class="btn btn-primary" onclick="refreshEvents()">🔄 Refresh</button></div></div>
         <div class="tabs">
-          <div class="tab active" data-filter="pending">Pending</div>
-          <div class="tab" data-filter="completed">Completed</div>
-          <div class="tab" data-filter="expired">Expired</div>
-          <div class="tab" data-filter="all">All</div>
+          <div class="tab active" data-filter="discovered">🆕 New</div>
+          <div class="tab" data-filter="scheduled">📅 Active</div>
+          <div class="tab" data-filter="snoozed">💤 Snoozed</div>
+          <div class="tab" data-filter="completed">✅ Done</div>
+          <div class="tab" data-filter="ignored">🚫 Ignored</div>
+          <div class="tab" data-filter="all">📋 All</div>
         </div>
         <div class="card" style="margin-top: 0; border-top: none; border-radius: 0 0 8px 8px;">
           <div class="card-body"><table><thead><tr><th>Event</th><th>Location</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody id="events-table"></tbody></table></div>
@@ -322,7 +330,7 @@ WebSocket: ws://localhost:3000
       var container = document.getElementById('toast-container');
       var toast = document.createElement('div');
       toast.className = 'toast';
-      var actionsHtml = eventId ? '<div class="toast-actions"><button class="btn btn-sm btn-success" onclick="acceptEvent(' + eventId + '); this.closest(\'.toast\').remove();">✓ Accept</button><button class="btn btn-sm btn-danger" onclick="rejectEvent(' + eventId + '); this.closest(\'.toast\').remove();">✗ Reject</button></div>' : '';
+      var actionsHtml = eventId ? '<div class="toast-actions"><button class="btn btn-sm btn-success" onclick="scheduleEvent(' + eventId + '); this.closest(\'.toast\').remove();">📅 Schedule</button><button class="btn btn-sm btn-warning" onclick="snoozeEvent(' + eventId + '); this.closest(\'.toast\').remove();">💤 Later</button><button class="btn btn-sm btn-secondary" onclick="ignoreEvent(' + eventId + '); this.closest(\'.toast\').remove();">🚫 Ignore</button></div>' : '';
       toast.innerHTML = '<div class="toast-header"><span class="toast-title">🔔 ' + title + '</span><span class="toast-close" onclick="this.closest(\'.toast\').remove()">✕</span></div><div class="toast-body">' + body + '</div>' + actionsHtml;
       container.appendChild(toast);
       setTimeout(function() { toast.remove(); }, 10000);
@@ -350,14 +358,59 @@ WebSocket: ws://localhost:3000
         var res = await fetch(API + '/api/stats');
         var data = await res.json();
         document.getElementById('stat-events').textContent = data.events || 0;
-        document.getElementById('stat-pending').textContent = data.pendingEvents || 0;
+        document.getElementById('stat-pending').textContent = (data.discoveredEvents || 0) + (data.snoozedEvents || 0);
         document.getElementById('stat-completed').textContent = data.completedEvents || 0;
         document.getElementById('stat-triggers').textContent = data.triggers || 0;
-        document.getElementById('pending-badge').textContent = data.pendingEvents || 0;
+        document.getElementById('pending-badge').textContent = (data.discoveredEvents || 0) + (data.snoozedEvents || 0);
         if (data.evolution) {
           document.getElementById('stat-wa-messages').textContent = data.evolution.totalMessages || 0;
         }
       } catch (e) { console.error('Stats error:', e); }
+    }
+
+    // Get action buttons based on event status
+    function getEventActions(e, compact) {
+      var id = e.id;
+      if (compact) {
+        // Compact buttons for table (icons only)
+        switch (e.status) {
+          case 'discovered':
+            return '<button class="btn btn-sm btn-success" onclick="scheduleEvent(' + id + ')" title="Schedule">📅</button>' +
+                   '<button class="btn btn-sm btn-warning" onclick="snoozeEvent(' + id + ')" title="Snooze 30min">💤</button>' +
+                   '<button class="btn btn-sm btn-secondary" onclick="ignoreEvent(' + id + ')" title="Ignore">🚫</button>';
+          case 'scheduled':
+            return '<button class="btn btn-sm btn-success" onclick="completeEvent(' + id + ')" title="Done">✅</button>' +
+                   '<button class="btn btn-sm btn-warning" onclick="snoozeEvent(' + id + ')" title="Snooze">💤</button>';
+          case 'snoozed':
+            return '<button class="btn btn-sm btn-success" onclick="scheduleEvent(' + id + ')" title="Schedule">📅</button>' +
+                   '<button class="btn btn-sm btn-secondary" onclick="ignoreEvent(' + id + ')" title="Ignore">🚫</button>';
+          case 'ignored':
+            return '<button class="btn btn-sm btn-primary" onclick="scheduleEvent(' + id + ')" title="Restore">↩️</button>' +
+                   '<button class="btn btn-sm btn-danger" onclick="deleteEvent(' + id + ')" title="Delete">🗑️</button>';
+          case 'completed':
+            return '<button class="btn btn-sm btn-danger" onclick="deleteEvent(' + id + ')" title="Delete">🗑️</button>';
+          default:
+            return '';
+        }
+      } else {
+        // Full buttons for recent events (text + icons)
+        switch (e.status) {
+          case 'discovered':
+            return '<button class="btn btn-sm btn-success" onclick="scheduleEvent(' + id + ')">📅 Schedule</button>' +
+                   '<button class="btn btn-sm btn-warning" onclick="snoozeEvent(' + id + ')">💤 Later</button>' +
+                   '<button class="btn btn-sm btn-secondary" onclick="ignoreEvent(' + id + ')">🚫 Ignore</button>';
+          case 'scheduled':
+            return '<button class="btn btn-sm btn-success" onclick="completeEvent(' + id + ')">✅ Done</button>' +
+                   '<button class="btn btn-sm btn-warning" onclick="snoozeEvent(' + id + ')">💤 Snooze</button>';
+          case 'snoozed':
+            return '<button class="btn btn-sm btn-success" onclick="scheduleEvent(' + id + ')">📅 Schedule</button>' +
+                   '<button class="btn btn-sm btn-secondary" onclick="ignoreEvent(' + id + ')">🚫 Ignore</button>';
+          case 'ignored':
+            return '<button class="btn btn-sm btn-primary" onclick="scheduleEvent(' + id + ')">↩️ Restore</button>';
+          default:
+            return '';
+        }
+      }
     }
 
     async function refreshEvents() {
@@ -367,13 +420,13 @@ WebSocket: ws://localhost:3000
         var events = await res.json();
 
         var recentHtml = events.slice(0, 5).map(function(e) {
-          var actions = e.status === 'pending' ? '<button class="btn btn-sm btn-success" onclick="acceptEvent(' + e.id + ')">✓</button><button class="btn btn-sm btn-danger" onclick="rejectEvent(' + e.id + ')">✗</button>' : '';
+          var actions = getEventActions(e, false);
           return '<tr><td>' + (e.title || 'Untitled') + '</td><td>' + (e.location || '-') + '</td><td><span class="badge badge-' + e.status + '">' + e.status + '</span></td><td><div class="btn-group">' + actions + '</div></td></tr>';
         }).join('');
         document.getElementById('recent-events').innerHTML = recentHtml || '<tr><td colspan="4" class="empty-state">No events</td></tr>';
 
         var tableHtml = events.map(function(e) {
-          var actions = e.status === 'pending' ? '<button class="btn btn-sm btn-success" onclick="acceptEvent(' + e.id + ')">✓</button><button class="btn btn-sm btn-danger" onclick="rejectEvent(' + e.id + ')">✗</button>' : '';
+          var actions = getEventActions(e, true);
           var dateStr = e.event_time ? new Date(e.event_time * 1000).toLocaleDateString() : '-';
           return '<tr><td><strong>' + (e.title || 'Untitled') + '</strong><br><small style="color: var(--text-secondary)">' + (e.description || '') + '</small></td><td>' + (e.location || '-') + '</td><td>' + dateStr + '</td><td><span class="badge badge-' + e.status + '">' + e.status + '</span></td><td><div class="btn-group">' + actions + '</div></td></tr>';
         }).join('');
@@ -410,23 +463,76 @@ WebSocket: ws://localhost:3000
       }
     }
 
-    async function acceptEvent(id) {
+    // Schedule event (approve for reminders)
+    async function scheduleEvent(id) {
       try {
-        await fetch(API + '/api/events/' + id + '/complete', { method: 'POST' });
-        addLog('success', 'Event #' + id + ' accepted');
+        await fetch(API + '/api/events/' + id + '/set-reminder', { method: 'POST' });
+        addLog('success', 'Event #' + id + ' scheduled for reminders');
+        showToast('Event Scheduled', 'You will receive context reminders when visiting related sites');
         refreshEvents();
         fetchStats();
-      } catch (e) { addLog('error', 'Failed to accept: ' + e.message); }
+      } catch (e) { addLog('error', 'Failed to schedule: ' + e.message); }
     }
 
-    async function rejectEvent(id) {
+    // ============ Event Actions ============
+
+    // Schedule event (approve for reminders)
+    async function scheduleEvent(id) {
       try {
-        await fetch(API + '/api/events/' + id, { method: 'DELETE' });
-        addLog('warning', 'Event #' + id + ' rejected');
+        await fetch(API + '/api/events/' + id + '/set-reminder', { method: 'POST' });
+        addLog('success', 'Event #' + id + ' scheduled for reminders');
+        showToast('📅 Event Scheduled', 'You will receive context reminders when visiting related sites');
         refreshEvents();
         fetchStats();
-      } catch (e) { addLog('error', 'Failed to reject: ' + e.message); }
+      } catch (e) { addLog('error', 'Failed to schedule: ' + e.message); }
     }
+
+    // Snooze event (remind again in 30 minutes)
+    async function snoozeEvent(id) {
+      try {
+        await fetch(API + '/api/events/' + id + '/snooze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ minutes: 30 }) });
+        addLog('info', 'Event #' + id + ' snoozed for 30 minutes');
+        showToast('💤 Snoozed', 'Will remind you again in 30 minutes');
+        refreshEvents();
+        fetchStats();
+      } catch (e) { addLog('error', 'Failed to snooze: ' + e.message); }
+    }
+
+    // Ignore event (user doesn't care, hide but don't delete)
+    async function ignoreEvent(id) {
+      try {
+        await fetch(API + '/api/events/' + id + '/ignore', { method: 'POST' });
+        addLog('warning', 'Event #' + id + ' ignored');
+        refreshEvents();
+        fetchStats();
+      } catch (e) { addLog('error', 'Failed to ignore: ' + e.message); }
+    }
+
+    // Complete event (mark as done)
+    async function completeEvent(id) {
+      try {
+        await fetch(API + '/api/events/' + id + '/complete', { method: 'POST' });
+        addLog('success', 'Event #' + id + ' completed');
+        showToast('✅ Done', 'Event marked as completed');
+        refreshEvents();
+        fetchStats();
+      } catch (e) { addLog('error', 'Failed to complete: ' + e.message); }
+    }
+
+    // Delete event permanently
+    async function deleteEvent(id) {
+      if (!confirm('Delete this event permanently? This cannot be undone.')) return;
+      try {
+        await fetch(API + '/api/events/' + id, { method: 'DELETE' });
+        addLog('warning', 'Event #' + id + ' deleted permanently');
+        refreshEvents();
+        fetchStats();
+      } catch (e) { addLog('error', 'Failed to delete: ' + e.message); }
+    }
+
+    // Legacy alias
+    var rejectEvent = deleteEvent;
+    var dismissEvent = snoozeEvent;
 
     async function testContext() {
       var url = document.getElementById('test-url').value;
@@ -477,25 +583,54 @@ WebSocket: ws://localhost:3000
       ws.onmessage = function(e) {
         try {
           var data = JSON.parse(e.data);
-          if (data.type === 'notification') {
-            // New event discovered from WhatsApp - show toast in webapp
-            showToast('New Event!', (data.event.title || 'Event') + ' - ' + (data.event.location || 'No location'), data.event.id);
-            addLog('info', 'New event: ' + data.event.title);
-          } else if (data.type === 'context_reminder') {
-            // Context reminder - don't show toast in webapp, Chrome extension handles this
-            addLog('info', 'Context trigger: ' + (data.event?.title || 'unknown'));
-          } else if (data.type === 'new_events') {
-            addLog('info', data.count + ' new events created');
-          } else if (data.type === 'event_updated') {
-            addLog('success', 'Event #' + data.eventId + ' ' + data.status);
-          } else if (data.type === 'event_deleted') {
-            addLog('warning', 'Event #' + data.eventId + ' deleted');
-          } else if (data.type === 'event_dismissed') {
-            addLog('info', 'Event dismissed');
+          var shouldRefresh = true;
+          
+          switch(data.type) {
+            case 'notification':
+              // New event discovered from WhatsApp
+              showToast('New Event!', (data.event.title || 'Event') + ' - ' + (data.event.location || 'No location'), data.event.id);
+              addLog('info', 'New event: ' + data.event.title);
+              break;
+            case 'context_reminder':
+              addLog('info', 'Context trigger: ' + (data.event?.title || 'unknown'));
+              break;
+            case 'new_events':
+              addLog('info', data.count + ' new events created');
+              break;
+            case 'event_updated':
+              addLog('success', 'Event #' + data.eventId + ' ' + data.status);
+              break;
+            case 'event_scheduled':
+              addLog('success', 'Event #' + data.eventId + ' scheduled');
+              break;
+            case 'event_snoozed':
+              addLog('info', 'Event #' + data.eventId + ' snoozed');
+              break;
+            case 'event_ignored':
+              addLog('warning', 'Event #' + data.eventId + ' ignored');
+              break;
+            case 'event_completed':
+              addLog('success', 'Event #' + data.eventId + ' completed');
+              break;
+            case 'event_deleted':
+              addLog('warning', 'Event #' + data.eventId + ' deleted');
+              break;
+            case 'event_dismissed':
+              addLog('info', 'Event dismissed');
+              break;
+            case 'event_acknowledged':
+              addLog('info', 'Event #' + data.eventId + ' acknowledged');
+              break;
+            default:
+              console.log('WS unknown:', data);
+              shouldRefresh = false;
           }
-          refreshEvents();
-          fetchStats();
-        } catch (err) { console.log('WS:', e.data); }
+          
+          if (shouldRefresh) {
+            refreshEvents();
+            fetchStats();
+          }
+        } catch (err) { console.log('WS parse error:', e.data); }
       };
       ws.onclose = function() { addLog('warning', 'WebSocket disconnected'); setTimeout(connectWebSocket, 3000); };
     }
