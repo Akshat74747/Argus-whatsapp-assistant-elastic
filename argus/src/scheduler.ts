@@ -5,7 +5,8 @@ import {
   updateEventStatus,
   getDueReminders,
   markEventReminded,
-  getContextEventsForUrl
+  getContextEventsForUrl,
+  checkEventConflicts
 } from './db.js';
 
 // Extended notification with popup type
@@ -18,6 +19,7 @@ interface NotificationPayload {
   event_type?: string;
   triggerType: string;
   popupType: 'event_discovery' | 'event_reminder' | 'context_reminder' | 'conflict_warning' | 'insight_card';
+  conflictingEvents?: Array<{ id: number; title: string; event_time: number | null }>;
 }
 
 type NotifyCallback = (event: NotificationPayload) => void;
@@ -84,8 +86,11 @@ export function checkContextTriggers(url: string): NotificationPayload[] {
   const events = getContextEventsForUrl(url);
   const notifications: NotificationPayload[] = [];
   
+  console.log(`[Scheduler] Checking URL "${url}" - found ${events.length} matching events`);
+  
   for (const event of events) {
     if (event.id) {
+      console.log(`[Scheduler] Context match: Event #${event.id} "${event.title}" (context_url: ${event.context_url})`);
       notifications.push({
         id: event.id,
         title: event.title,
@@ -100,6 +105,37 @@ export function checkContextTriggers(url: string): NotificationPayload[] {
   }
   
   return notifications;
+}
+
+// Check for calendar conflicts with a new event
+export function checkCalendarConflicts(eventId: number, eventTime: number): NotificationPayload | null {
+  const conflicts = checkEventConflicts(eventTime, 60); // 1 hour window
+  
+  // Filter out the event itself
+  const otherConflicts = conflicts.filter(e => e.id !== eventId);
+  
+  if (otherConflicts.length === 0) return null;
+  
+  const event = getEventById(eventId);
+  if (!event) return null;
+  
+  console.log(`[Scheduler] Conflict detected: Event #${eventId} conflicts with ${otherConflicts.length} events`);
+  
+  return {
+    id: event.id!,
+    title: event.title,
+    description: event.description,
+    event_time: event.event_time,
+    location: event.location,
+    event_type: event.event_type,
+    triggerType: 'conflict',
+    popupType: 'conflict_warning',
+    conflictingEvents: otherConflicts.map(e => ({
+      id: e.id!,
+      title: e.title,
+      event_time: e.event_time
+    }))
+  };
 }
 
 function checkTimeTriggers(): void {

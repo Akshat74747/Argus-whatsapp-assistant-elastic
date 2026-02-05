@@ -1,6 +1,12 @@
-import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact } from './db.js';
+import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts } from './db.js';
 import { extractEvents, classifyMessage } from './gemini.js';
 import type { Message, WhatsAppWebhook } from './types.js';
+
+interface ConflictInfo {
+  id: number;
+  title: string;
+  event_time: number | null;
+}
 
 interface CreatedEvent {
   id: number;
@@ -13,6 +19,7 @@ interface CreatedEvent {
   keywords: string;
   confidence: number;
   context_url?: string | null;
+  conflicts?: ConflictInfo[];
 }
 
 interface IngestionResult {
@@ -22,6 +29,7 @@ interface IngestionResult {
   skipped: boolean;
   skipReason?: string;
   events?: CreatedEvent[];
+  conflicts?: Array<{ eventId: number; conflictsWith: ConflictInfo[] }>;
 }
 
 export async function processWebhook(
@@ -115,32 +123,68 @@ export async function processMessage(
         }
       }
 
-      // Determine context_url for subscription types (Netflix, Amazon, etc.)
+      // Determine context_url based on event type
       let contextUrl: string | null = null;
-      if (event.type === 'subscription' && event.location) {
-        // Extract domain from location if it looks like a URL
+      
+      // For subscriptions: extract just the service NAME (not full domain)
+      if (event.type === 'subscription') {
+        // Known service keywords to match
+        const serviceKeywords = [
+          'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify', 
+          'youtube', 'hulu', 'hbo', 'zee5', 'sonyliv', 'jiocinema',
+          'gym', 'domain', 'hosting', 'aws', 'azure', 'vercel', 'heroku'
+        ];
+        
+        // Check location and keywords for service name
+        const searchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title}`.toLowerCase();
+        
+        for (const service of serviceKeywords) {
+          if (searchText.includes(service)) {
+            contextUrl = service; // Just the keyword, not full domain!
+            break;
+          }
+        }
+        
+        // If no known service found, try to extract from location
+        if (!contextUrl && event.location) {
+          // Remove common URL parts to get just the service name
+          const cleaned = event.location.toLowerCase()
+            .replace(/^https?:\/\//, '')
+            .replace(/^www\./, '')
+            .replace(/\.(com|in|org|net|io|co).*$/, '');
+          if (cleaned.length > 2) {
+            contextUrl = cleaned;
+          }
+        }
+      }
+      
+      // For travel: extract location keywords (goa, mumbai, delhi, etc.)
+      if (event.type === 'travel' || event.type === 'recommendation') {
+        const travelKeywords = [
+          'goa', 'mumbai', 'delhi', 'bangalore', 'chennai', 'kolkata', 'hyderabad',
+          'jaipur', 'udaipur', 'kerala', 'manali', 'shimla', 'ladakh', 'kashmir',
+          'thailand', 'bali', 'singapore', 'dubai', 'maldives', 'europe'
+        ];
+        
+        const searchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title} ${event.description || ''}`.toLowerCase();
+        
+        for (const place of travelKeywords) {
+          if (searchText.includes(place)) {
+            contextUrl = place;
+            break;
+          }
+        }
+      }
+      
+      // For any event mentioning a location, also try to set context_url
+      if (!contextUrl && event.location) {
         const locationLower = event.location.toLowerCase();
-        if (locationLower.includes('.com') || locationLower.includes('.in') || locationLower.includes('.org')) {
-          contextUrl = locationLower.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
-        } else {
-          // Map known services to their domains
-          const serviceDomains: Record<string, string> = {
-            'netflix': 'netflix.com',
-            'amazon prime': 'amazon.com',
-            'amazon': 'amazon.com',
-            'prime video': 'primevideo.com',
-            'hotstar': 'hotstar.com',
-            'disney': 'disneyplus.com',
-            'spotify': 'spotify.com',
-            'youtube': 'youtube.com',
-            'gym': 'gym',
-            'subscription': '',
-          };
-          for (const [service, domain] of Object.entries(serviceDomains)) {
-            if (locationLower.includes(service) && domain) {
-              contextUrl = domain;
-              break;
-            }
+        // Check for travel destinations in location
+        const places = ['goa', 'mumbai', 'delhi', 'bangalore', 'chennai', 'kolkata'];
+        for (const place of places) {
+          if (locationLower.includes(place)) {
+            contextUrl = place;
+            break;
           }
         }
       }
@@ -175,6 +219,21 @@ export async function processMessage(
         confidence: event.confidence,
         context_url: contextUrl,
       });
+
+      // Check for calendar conflicts
+      if (eventTime) {
+        const conflicts = checkEventConflicts(eventTime, 60);
+        const otherConflicts = conflicts.filter(e => e.id !== eventId);
+        if (otherConflicts.length > 0) {
+          const lastEvent = createdEvents[createdEvents.length - 1];
+          lastEvent.conflicts = otherConflicts.map(e => ({
+            id: e.id!,
+            title: e.title,
+            event_time: e.event_time
+          }));
+          console.log(`⚠️ Conflict: Event "${event.title}" conflicts with ${otherConflicts.length} events`);
+        }
+      }
 
       // Create triggers
       // Time-based trigger

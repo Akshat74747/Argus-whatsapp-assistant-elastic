@@ -492,6 +492,20 @@
     }
     html += '</div>';
 
+    // Show conflicting events for conflict_warning popup
+    if (popupType === 'conflict_warning' && extraData.conflictingEvents && extraData.conflictingEvents.length > 0) {
+      html += '<div class="argus-question" style="background: #fef2f2; border-color: #fecaca; color: #991b1b;">';
+      html += '<strong>⚠️ Conflicts with:</strong><br>';
+      extraData.conflictingEvents.forEach(function(conflict) {
+        let conflictTime = '';
+        if (conflict.event_time) {
+          conflictTime = new Date(conflict.event_time * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        }
+        html += '• ' + escapeHtml(conflict.title) + (conflictTime ? ' (' + conflictTime + ')' : '') + '<br>';
+      });
+      html += '</div>';
+    }
+
     // Question
     if (config.question) {
       html += '<div class="argus-question">' + config.question + '</div>';
@@ -684,7 +698,7 @@
         break;
 
       case 'ARGUS_CONFLICT':
-        showModal(message.event, 'conflict_warning');
+        showModal(message.event, 'conflict_warning', { conflictingEvents: message.conflictingEvents });
         sendResponse({ received: true });
         break;
 

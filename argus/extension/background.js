@@ -84,6 +84,16 @@ async function handleWebSocketMessage(data) {
       });
       break;
       
+    case 'conflict_warning':
+      // Calendar conflict detected - show conflict warning popup
+      console.log('[Argus] Conflict warning:', data.event?.title, 'conflicts with', data.conflictingEvents?.length, 'events');
+      await sendToActiveTab({
+        type: 'ARGUS_CONFLICT',
+        event: data.event,
+        conflictingEvents: data.conflictingEvents,
+      });
+      break;
+      
     case 'context_reminder':
       // Context reminder - already handled by API response in checkCurrentUrl()
       console.log('[Argus] Context reminder (handled by API):', data.event?.title);

@@ -10,7 +10,7 @@ import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, 
 import { initGemini } from './gemini.js';
 import { processWebhook } from './ingestion.js';
 import { matchContext, extractContextFromUrl } from './matcher.js';
-import { startScheduler, stopScheduler, completeEvent, checkContextTriggers } from './scheduler.js';
+import { startScheduler, stopScheduler, completeEvent, checkContextTriggers, checkCalendarConflicts } from './scheduler.js';
 import { parseConfig, WhatsAppWebhookSchema, ContextCheckRequestSchema } from './types.js';
 import { 
   initEvolutionDb, 
@@ -371,7 +371,18 @@ app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
     // Broadcast each event to WebSocket clients for overlay notifications
     if (result.eventsCreated > 0 && result.events) {
       for (const event of result.events) {
+        // Send new event notification
         broadcast({ type: 'notification', event });
+        
+        // If there are conflicts, also send a conflict warning
+        if (event.conflicts && event.conflicts.length > 0) {
+          broadcast({ 
+            type: 'conflict_warning', 
+            event,
+            conflictingEvents: event.conflicts,
+            popupType: 'conflict_warning'
+          });
+        }
       }
     }
 

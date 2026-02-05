@@ -70,9 +70,9 @@ Return JSON with this exact schema:
       "title": "short title",
       "description": "full details or null",
       "event_time": "ISO datetime or null",
-      "location": "place name or URL/service name for subscriptions (e.g. netflix.com)",
+      "location": "place name (goa, mumbai) or service name (netflix, hotstar, amazon)",
       "participants": ["names mentioned"],
-      "keywords": ["searchable", "keywords"],
+      "keywords": ["searchable", "keywords", "include place names and service names"],
       "confidence": 0.0 to 1.0
     }
   ]
@@ -80,17 +80,26 @@ Return JSON with this exact schema:
 
 Rules:
 - Understand informal/broken English and Hinglish (Hindi+English mix)
-- Handle typos: "cancle" = "cancel", "tomoro" = "tomorrow"
+- Handle typos: "cancle" = "cancel", "tomoro" = "tomorrow", "goa" = "goa"
 - "kal" = tomorrow, "aaj" = today, "parso" = day after tomorrow
 - "this week" = within 7 days, use end of week as event_time
 - Extract times like "5pm", "shaam ko" (evening), "subah" (morning)
-- For subscriptions (Netflix, Amazon Prime, gym, etc):
+
+- For SUBSCRIPTIONS (Netflix, Hotstar, Amazon Prime, gym, domain, hosting):
   - type = "subscription"
-  - location = service domain (netflix.com, amazon.com, etc)
-  - title = action to take (Cancel Netflix, Renew subscription, etc)
+  - location = JUST the service name (netflix, hotstar, amazon) - NOT full domain!
+  - keywords = include the service name
+  - title = action to take (Cancel Netflix, Renew Hotstar, etc)
+
+- For TRAVEL/RECOMMENDATIONS (trips, places, things to buy/do):
+  - type = "travel" or "recommendation"
+  - location = place name (goa, mumbai, delhi)
+  - keywords = include the place name and any products/shops mentioned
+  - Example: "Rahul recommended cashews at Zantye's in Goa" → type=recommendation, location=goa, keywords=[goa, cashews, zantyes, rahul]
+
 - Intent phrases like "want to", "need to", "have to", "should" indicate tasks
 - If no event/task found, return: {"events": []}
-- Keywords should include location, people, topics for future search
+- Keywords should include: location names, service names, product names, people names
 - Confidence < 0.5 if uncertain
 - Even casual mentions of tasks/intentions should be captured with lower confidence`;
 

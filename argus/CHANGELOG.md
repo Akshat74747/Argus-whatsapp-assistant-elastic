@@ -2,6 +2,29 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.2.0] - 2026-02-05
+
+### Added
+- **Calendar conflict detection** - Warns when new events conflict with existing events (±1 hour window)
+- **Travel/Goa scenario** - Any message mentioning travel destinations sets context_url for URL matching
+- **Service name extraction** - Subscriptions use just the service name (netflix, hotstar) not full domain
+- **Enhanced Gemini prompt** - Better extraction of service names and travel destinations
+
+### Fixed
+- **URL matching** - Now case-insensitive, matches if URL contains the keyword anywhere
+- **Subscription context** - "want to cancel netflix" now correctly sets context_url="netflix"
+- **Travel context** - "Rahul recommended cashews in Goa" now sets context_url="goa"
+
+### Scenarios Working
+- ✅ **Netflix Subscription** - "cancel my netflix" + visit netflix.com → shows reminder
+- ✅ **Goa Cashew** - "cashews in goa" + visit goatourism.com → shows reminder  
+- ✅ **Calendar Conflict** - Create overlapping event → shows conflict warning
+
+### Technical
+- `checkEventConflicts()` function in db.ts for conflict detection
+- `context_url` now stores just keywords (netflix, goa) not full domains
+- URL matching: `LOWER(url) LIKE '%' || LOWER(context_url) || '%'`
+
 ## [2.1.0] - 2026-02-06
 
 ### Added

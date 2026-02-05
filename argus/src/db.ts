@@ -495,14 +495,33 @@ export function markEventReminded(eventId: number): void {
 }
 
 // Get events with context URL that match a given URL
+// Matches if URL contains the context_url keyword (case-insensitive)
 export function getContextEventsForUrl(url: string): Event[] {
+  const urlLower = url.toLowerCase();
   const stmt = getDb().prepare(`
     SELECT * FROM events
     WHERE context_url IS NOT NULL 
+    AND context_url != ''
     AND status NOT IN ('completed', 'expired')
-    AND ? LIKE '%' || context_url || '%'
+    AND LOWER(?) LIKE '%' || LOWER(context_url) || '%'
   `);
-  return stmt.all(url) as Event[];
+  return stmt.all(urlLower) as Event[];
+}
+
+// Check for calendar conflicts with existing events
+export function checkEventConflicts(eventTime: number, durationMinutes = 60): Event[] {
+  // Check events within +/- duration window
+  const startWindow = eventTime - (durationMinutes * 60);
+  const endWindow = eventTime + (durationMinutes * 60);
+  
+  const stmt = getDb().prepare(`
+    SELECT * FROM events
+    WHERE event_time IS NOT NULL
+    AND event_time BETWEEN ? AND ?
+    AND status NOT IN ('completed', 'expired')
+    ORDER BY event_time ASC
+  `);
+  return stmt.all(startWindow, endWindow) as Event[];
 }
 
 // Dismiss a context event for a URL (can be temporary or permanent)
