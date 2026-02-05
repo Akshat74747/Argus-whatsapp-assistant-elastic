@@ -101,14 +101,14 @@ whatsapp-chat-rmd-argus/
 ### Modal Overlay Notifications
 - Centered, beautiful modal popup (like survey overlays)
 - Gradient header with event icon
-- Accept/Dismiss action buttons
-- Auto-closes after 30 seconds
-- Keyboard shortcut (ESC) to dismiss
+- 5 popup types: discovery, reminder, context, conflict, insight
+- Accept/Dismiss/Set Reminder action buttons
+- Context reminders persist until user acts
 
-### Chrome Native Notifications
-- System notifications with custom actions
-- Click to open dashboard
-- Accept/Reject buttons inline
+### Context-Aware Triggers
+- **Subscriptions:** "cancel netflix" → triggers on netflix.com
+- **Travel:** "cashews in goa" → triggers on any goa URL
+- **Conflicts:** overlapping events → shows warning popup
 
 ### Direct Evolution DB Integration
 - Query WhatsApp messages directly from PostgreSQL
@@ -255,19 +255,22 @@ Tests use:
 
 See [CHANGELOG.md](argus/CHANGELOG.md) for version history.
 
-### Latest: v1.1.0 (2026-02-05)
+### Latest: v2.2.0 (2026-02-05)
+
+**Scenarios Working:**
+- ✅ Netflix Subscription - cancel reminder on netflix.com
+- ✅ Goa Cashew - travel recommendations on goa URLs
+- ✅ Calendar Conflict - overlapping event warnings
 
 **Added:**
-- WebSocket event broadcasting
-- Modal overlay notifications
-- Chrome notification integration
-- Evolution DB direct integration
-- Source message tracking
+- Calendar conflict detection (±1 hour window)
+- Travel/location context extraction (goa, mumbai, delhi)
+- Service name extraction for subscriptions (netflix, hotstar)
 
 **Fixed:**
-- Content script syntax errors
-- Foreign key constraint violations
-- JSONB parsing issues
+- URL matching now case-insensitive
+- context_url uses keywords not full domains
+- All popups show as in-page overlays (no Chrome notifications)
 
 ## 🤝 Contributing
 
