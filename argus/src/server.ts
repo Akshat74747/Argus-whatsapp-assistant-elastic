@@ -105,9 +105,14 @@ function broadcast(data: object): void {
   }
 }
 
-// Start scheduler
+// Start scheduler - broadcasts reminders/triggers
 startScheduler((event) => {
-  broadcast({ type: 'notification', event });
+  // Scheduler sends different popup types - forward them correctly
+  const type = event.popupType === 'event_reminder' ? 'trigger' : 
+               event.popupType === 'snooze_reminder' ? 'notification' :
+               event.popupType === 'context_reminder' ? 'context_reminder' :
+               'notification';
+  broadcast({ type, event, popupType: event.popupType });
 });
 
 // ============ API Routes ============
@@ -396,18 +401,22 @@ app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
       console.log(`✨ [WEBHOOK] Created ${result.eventsCreated} event(s) from message`);
       for (const event of result.events) {
         console.log(`   └─ Event #${event.id}: "${event.title}" (type: ${event.event_type}, status: discovered, context_url: ${event.context_url || 'none'})`);
-        // Send new event notification
-        broadcast({ type: 'notification', event });
-        console.log(`📡 [WEBHOOK] Broadcasted discovery notification for event #${event.id}`);
         
-        // If there are conflicts, also send a conflict warning
-        if (event.conflicts && event.conflicts.length > 0) {
+        // Send ONE notification per event - include conflict info if present
+        const hasConflicts = event.conflicts && event.conflicts.length > 0;
+        if (hasConflicts) {
+          // If conflicts, send as conflict_warning (which includes the event)
           broadcast({ 
             type: 'conflict_warning', 
             event,
             conflictingEvents: event.conflicts,
             popupType: 'conflict_warning'
           });
+          console.log(`📡 [WEBHOOK] Broadcasted CONFLICT warning for event #${event.id} (conflicts with ${event.conflicts!.length} events)`);
+        } else {
+          // No conflicts, send as regular notification
+          broadcast({ type: 'notification', event });
+          console.log(`📡 [WEBHOOK] Broadcasted discovery notification for event #${event.id}`);
         }
       }
     }
