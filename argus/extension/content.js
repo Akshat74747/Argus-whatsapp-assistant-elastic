@@ -1,9 +1,13 @@
-// Argus Content Script v2.1
+// Argus Content Script v2.2
 // In-page overlay popups for event notifications
 // Popup Types: event_discovery, event_reminder, context_reminder, conflict_warning, insight_card
 
 (function() {
   'use strict';
+  
+  // Track dismissed/handled events (persisted for session)
+  const dismissedEventIds = new Set();
+  const handledEventIds = new Set();
 
   // ============ STYLES ============
   const STYLES = `
@@ -423,12 +427,24 @@
 
   // ============ MODAL FUNCTIONS ============
   function showModal(event, popupType = 'event_discovery', extraData = {}) {
-    // Prevent duplicate modals
-    if (event.id && shownEventIds.has(event.id)) {
-      console.log('[Argus] Modal already shown for event:', event.id);
-      return;
+    // Prevent duplicate/dismissed modals
+    if (event.id) {
+      if (shownEventIds.has(event.id)) {
+        console.log('[Argus] ⏭️ Modal already shown for event:', event.id);
+        return;
+      }
+      if (dismissedEventIds.has(event.id)) {
+        console.log('[Argus] ⏭️ Event dismissed, not showing:', event.id);
+        return;
+      }
+      if (handledEventIds.has(event.id)) {
+        console.log('[Argus] ⏭️ Event already handled, not showing:', event.id);
+        return;
+      }
     }
 
+    console.log(`[Argus] 🎨 Showing popup: type="${popupType}", event="${event.title}" (id: ${event.id})`);
+    
     injectStyles();
 
     // Close any existing modal
@@ -582,25 +598,49 @@
 
   function handleAction(action, event, popupType, extraData) {
     const eventId = event.id;
-    console.log('[Argus] Action:', action, 'Event:', eventId);
+    console.log(`[Argus] 🔵 User action: "${action}" on event #${eventId} (popup: ${popupType})`);
+    
+    // Track this event as handled so we don't show it again
+    if (eventId) {
+      handledEventIds.add(eventId);
+    }
 
     switch (action) {
       case 'set-reminder':
+      case 'schedule':
+        console.log(`[Argus] 📡 Sending SET_REMINDER message to background for event #${eventId}`);
         chrome.runtime.sendMessage({ type: 'SET_REMINDER', eventId: eventId });
-        showToast('⏰ Reminder Set!', 'You will be notified before the event.');
+        showToast('📅 Scheduled!', 'You will be reminded before the event.');
+        break;
+
+      case 'snooze':
+        console.log(`[Argus] 📡 Sending SNOOZE for event #${eventId}`);
+        chrome.runtime.sendMessage({ type: 'SNOOZE_EVENT', eventId: eventId, minutes: 30 });
+        showToast('💤 Snoozed!', 'Reminder in 30 minutes.');
+        break;
+
+      case 'ignore':
+        console.log(`[Argus] 📡 Sending IGNORE for event #${eventId}`);
+        chrome.runtime.sendMessage({ type: 'IGNORE_EVENT', eventId: eventId });
+        showToast('🚫 Ignored', 'Event will not remind you.');
         break;
 
       case 'acknowledge':
+        console.log(`[Argus] 📡 Sending ACKNOWLEDGE_REMINDER for event #${eventId}`);
         chrome.runtime.sendMessage({ type: 'ACKNOWLEDGE_REMINDER', eventId: eventId });
         break;
 
       case 'done':
-        chrome.runtime.sendMessage({ type: 'MARK_DONE', eventId: eventId });
-        showToast('✅ Marked as Done!', event.title);
+      case 'complete':
+        console.log(`[Argus] 📡 Sending COMPLETE for event #${eventId}`);
+        chrome.runtime.sendMessage({ type: 'COMPLETE_EVENT', eventId: eventId });
+        showToast('✅ Completed!', event.title);
         break;
 
       case 'dismiss':
       case 'dismiss-temp':
+        console.log(`[Argus] 🔔 Temporary dismiss for event #${eventId}`);
+        if (eventId) dismissedEventIds.add(eventId);
         chrome.runtime.sendMessage({
           type: 'DISMISS_EVENT',
           eventId: eventId,
@@ -610,6 +650,8 @@
         break;
 
       case 'dismiss-permanent':
+        console.log(`[Argus] ❌ Permanent dismiss for event #${eventId}`);
+        if (eventId) dismissedEventIds.add(eventId);
         chrome.runtime.sendMessage({
           type: 'DISMISS_EVENT',
           eventId: eventId,
@@ -620,11 +662,13 @@
         break;
 
       case 'delete':
+        console.log(`[Argus] 🗑️ Deleting event #${eventId}`);
         chrome.runtime.sendMessage({ type: 'DELETE_EVENT', eventId: eventId });
         showToast('🗑️ Event Deleted', event.title);
         break;
 
       case 'view':
+        console.log(`[Argus] 👁️ Opening dashboard`);
         chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD' });
         break;
     }
@@ -679,40 +723,46 @@
 
   // ============ MESSAGE HANDLERS ============
   chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-    console.log('[Argus] Content received:', message.type);
+    console.log(`[Argus] 📬 Content script received: ${message.type}`);
 
     switch (message.type) {
       case 'ARGUS_NEW_EVENT':
+        console.log(`[Argus] 📅 New event discovered: "${message.event?.title}" (id: ${message.event?.id})`);
         showModal(message.event, 'event_discovery');
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_REMINDER':
+        console.log(`[Argus] ⏰ Time-based reminder: "${message.event?.title || message.message}" (id: ${message.event?.id})`);
         showModal(message.event || { title: message.message }, 'event_reminder');
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_CONTEXT_REMINDER':
+        console.log(`[Argus] 🌐 Context reminder: "${message.event?.title}" (id: ${message.event?.id}) for URL: ${message.url}`);
         showModal(message.event, 'context_reminder', { url: message.url });
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_CONFLICT':
+        console.log(`[Argus] ⚠️ Conflict warning: "${message.event?.title}" conflicts with ${message.conflictingEvents?.length} event(s)`);
         showModal(message.event, 'conflict_warning', { conflictingEvents: message.conflictingEvents });
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_INSIGHT':
+        console.log(`[Argus] 💡 Insight card: "${message.event?.title}"`);
         showModal(message.event, 'insight_card');
         sendResponse({ received: true });
         break;
 
       default:
+        console.log(`[Argus] ❓ Unknown message type: ${message.type}`);
         sendResponse({ received: false, error: 'Unknown message type' });
     }
 
     return true;
   });
 
-  console.log('[Argus] Content Script v2.1 loaded');
+  console.log('[Argus] Content Script v2.2 loaded');
 })();

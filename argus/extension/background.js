@@ -1,4 +1,4 @@
-// Argus Background Service Worker v2.1
+// Argus Background Service Worker v2.2
 // Handles: WebSocket connection, API calls, context triggers, reminder flow
 // NOTE: All popups are shown via content.js overlay - NO Chrome notifications
 
@@ -26,18 +26,25 @@ function isEventDismissed(eventId) {
   const dismissedTime = dismissedEvents.get(eventId);
   if (!dismissedTime) return false;
   
-  // Dismissed for 30 minutes
   const DISMISS_DURATION = 30 * 60 * 1000;
-  return (Date.now() - dismissedTime) < DISMISS_DURATION;
+  const isDismissed = (Date.now() - dismissedTime) < DISMISS_DURATION;
+  if (isDismissed) {
+    const remaining = Math.floor((DISMISS_DURATION - (Date.now() - dismissedTime)) / 1000 / 60);
+    console.log('[Argus] Event #' + eventId + ' dismissed (' + remaining + ' min left)');
+  }
+  return isDismissed;
 }
 
 function dismissEvent(eventId) {
   dismissedEvents.set(eventId, Date.now());
+  console.log('[Argus] Event #' + eventId + ' dismissed for 30 min');
 }
 
 // ============ WEBSOCKET CONNECTION ============
 
 function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  
   try {
     ws = new WebSocket(WS_URL);
     
@@ -49,7 +56,7 @@ function connectWebSocket() {
     ws.onmessage = function(event) {
       try {
         const data = JSON.parse(event.data);
-        console.log('[Argus] WS message:', data.type);
+        console.log('[Argus] WS:', data.type);
         handleWebSocketMessage(data);
       } catch (e) {
         console.error('[Argus] WS parse error:', e);
@@ -58,16 +65,15 @@ function connectWebSocket() {
     
     ws.onclose = function() {
       console.log('[Argus] WebSocket disconnected');
+      ws = null;
       const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts));
       reconnectAttempts++;
       setTimeout(connectWebSocket, delay);
     };
     
-    ws.onerror = function(error) {
-      console.error('[Argus] WebSocket error:', error);
-    };
+    ws.onerror = function() {};
   } catch (e) {
-    console.error('[Argus] Failed to create WebSocket:', e);
+    console.error('[Argus] WS error:', e);
   }
 }
 
@@ -76,116 +82,98 @@ function connectWebSocket() {
 async function handleWebSocketMessage(data) {
   switch (data.type) {
     case 'notification':
-      // New event discovered from WhatsApp - show discovery popup
-      console.log('[Argus] New event discovered:', data.event?.title);
-      await sendToActiveTab({
-        type: 'ARGUS_NEW_EVENT',
-        event: data.event,
-      });
+      console.log('[Argus] New event:', data.event?.title);
+      await sendToFirstAvailableTab({ type: 'ARGUS_NEW_EVENT', event: data.event });
       break;
       
     case 'conflict_warning':
-      // Calendar conflict detected - show conflict warning popup
-      console.log('[Argus] Conflict warning:', data.event?.title, 'conflicts with', data.conflictingEvents?.length, 'events');
-      await sendToActiveTab({
+      console.log('[Argus] Conflict:', data.event?.title);
+      await sendToFirstAvailableTab({
         type: 'ARGUS_CONFLICT',
         event: data.event,
         conflictingEvents: data.conflictingEvents,
       });
       break;
       
-    case 'context_reminder':
-      // Context reminder - already handled by API response in checkCurrentUrl()
-      console.log('[Argus] Context reminder (handled by API):', data.event?.title);
-      break;
-      
     case 'trigger':
-      // Scheduled reminder triggered (1 hour before event)
-      console.log('[Argus] Scheduled reminder:', data.event?.title || data.message);
-      await sendToActiveTab({
+      console.log('[Argus] Reminder:', data.event?.title);
+      await sendToAllTabs({
         type: 'ARGUS_REMINDER',
         event: data.event || { title: data.message },
         message: data.message,
       });
-      break;
-      
-    case 'event_updated':
-    case 'event_scheduled':
-    case 'event_completed':
-    case 'event_deleted':
-    case 'event_dismissed':
-      console.log('[Argus] Event status changed:', data.type, data.eventId);
       break;
   }
 }
 
 // ============ TAB COMMUNICATION ============
 
-async function sendToActiveTab(message) {
+async function sendToFirstAvailableTab(message) {
   try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0] && tabs[0].id && !tabs[0].url?.startsWith('chrome://')) {
-      console.log('[Argus] Sending to tab:', tabs[0].id, message.type);
-      
-      try {
-        await chrome.tabs.sendMessage(tabs[0].id, message);
-        console.log('[Argus] Message sent successfully');
-        return true;
-      } catch (err) {
-        // Content script might not be injected yet, try to inject it
-        console.log('[Argus] Content script not ready, injecting:', err.message);
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tabs[0].id },
-            files: ['content.js']
-          });
-          // Wait a bit for script to load
-          await new Promise(resolve => setTimeout(resolve, 100));
-          // Try sending again
-          await chrome.tabs.sendMessage(tabs[0].id, message);
-          console.log('[Argus] Message sent after injection');
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    for (const tab of activeTabs) {
+      if (tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+        if (await trySendToTab(tab.id, message)) {
+          console.log('[Argus] Sent to active tab');
           return true;
-        } catch (injectErr) {
-          console.log('[Argus] Failed to inject content script:', injectErr.message);
         }
       }
     }
-  } catch (err) {
-    console.log('[Argus] Could not send to tab:', err.message);
+    
+    const allTabs = await chrome.tabs.query({});
+    for (const tab of allTabs) {
+      if (tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+        if (await trySendToTab(tab.id, message)) {
+          console.log('[Argus] Sent to tab ' + tab.id);
+          return true;
+        }
+      }
+    }
+    
+    console.log('[Argus] No tabs available');
+    return false;
+  } catch (e) {
+    console.error('[Argus] Send error:', e.message);
+    return false;
   }
-  return false;
+}
+
+async function trySendToTab(tabId, message) {
+  try {
+    await chrome.tabs.sendMessage(tabId, message);
+    return true;
+  } catch (e) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+      await new Promise(r => setTimeout(r, 100));
+      await chrome.tabs.sendMessage(tabId, message);
+      return true;
+    } catch (e2) {
+      return false;
+    }
+  }
 }
 
 async function sendToAllTabs(message) {
   const tabs = await chrome.tabs.query({});
   let sent = 0;
   for (const tab of tabs) {
-    if (tab.id && !tab.url?.startsWith('chrome://')) {
-      try {
-        await chrome.tabs.sendMessage(tab.id, message);
-        sent++;
-      } catch (e) {
-        // Content script not loaded
-      }
+    if (tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+      if (await trySendToTab(tab.id, message)) sent++;
     }
   }
-  console.log('[Argus] Sent to', sent, 'tabs');
+  console.log('[Argus] Sent to ' + sent + ' tabs');
   return sent;
 }
 
-// ============ CONTEXT CHECK (URL-based triggers) ============
+// ============ CONTEXT CHECK ============
 
 async function checkCurrentUrl(url, title) {
-  // Skip internal URLs
-  if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:')) {
-    return;
-  }
-
-  // Skip if same as last URL (prevent duplicate checks)
+  if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:')) return;
   if (url === lastCheckedUrl) return;
   lastCheckedUrl = url;
 
-  console.log('[Argus] Checking URL:', url);
+  console.log('[Argus] Context check:', url.substring(0, 50));
 
   try {
     const response = await fetch(API_BASE + '/api/context-check', {
@@ -194,36 +182,16 @@ async function checkCurrentUrl(url, title) {
       body: JSON.stringify({ url, title }),
     });
 
-    if (!response.ok) {
-      console.error('[Argus] Context check failed:', response.status);
-      return;
-    }
-
+    if (!response.ok) return;
     const result = await response.json();
 
-    // Handle URL-based context triggers (Netflix scenario)
     if (result.contextTriggers && result.contextTriggers.length > 0) {
-      console.log('[Argus] Found', result.contextTriggers.length, 'context triggers');
+      console.log('[Argus] Found ' + result.contextTriggers.length + ' context triggers');
       
       for (const event of result.contextTriggers) {
         if (!isEventDismissed(event.id)) {
-          console.log('[Argus] Showing context reminder:', event.id, event.title);
-          await sendToActiveTab({
-            type: 'ARGUS_CONTEXT_REMINDER',
-            event: event,
-            url: url,
-          });
-        }
-      }
-    }
-
-    // Handle keyword-based matches
-    if (result.matched && result.events && result.events.length > 0) {
-      console.log('[Argus] Found', result.events.length, 'keyword matches');
-      
-      for (const event of result.events) {
-        if (!isEventDismissed(event.id)) {
-          await sendToActiveTab({
+          console.log('[Argus] Context reminder:', event.title);
+          await sendToFirstAvailableTab({
             type: 'ARGUS_CONTEXT_REMINDER',
             event: event,
             url: url,
@@ -232,24 +200,17 @@ async function checkCurrentUrl(url, title) {
       }
     }
   } catch (error) {
-    console.error('[Argus] Context check error:', error.message);
+    console.error('[Argus] Context error:', error.message);
   }
 }
 
-const debouncedUrlCheck = debounce(checkCurrentUrl, 300);
+const debouncedUrlCheck = debounce(checkCurrentUrl, 500);
 
 // ============ TAB LISTENERS ============
 
 chrome.tabs.onUpdated.addListener(async function(tabId, changeInfo, tab) {
-  // Check on complete status for any tab (not just active)
-  if (changeInfo.status === 'complete' && tab.url) {
-    console.log('[Argus] Tab updated:', tabId, tab.url);
-    
-    // Only check if this is the active tab
-    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTabs[0] && activeTabs[0].id === tabId) {
-      debouncedUrlCheck(tab.url, tab.title);
-    }
+  if (changeInfo.status === 'complete' && tab.url && tab.active) {
+    debouncedUrlCheck(tab.url, tab.title);
   }
 });
 
@@ -257,72 +218,85 @@ chrome.tabs.onActivated.addListener(async function(activeInfo) {
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     if (tab.url && tab.status === 'complete') {
-      console.log('[Argus] Tab activated:', activeInfo.tabId, tab.url);
-      // Clear last checked to force recheck
       lastCheckedUrl = '';
       debouncedUrlCheck(tab.url, tab.title);
     }
-  } catch (e) {
-    console.log('[Argus] Tab activation error:', e.message);
-  }
+  } catch (e) {}
 });
 
-// ============ MESSAGE HANDLERS (from content script & popup) ============
+// ============ MESSAGE HANDLERS ============
 
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-  console.log('[Argus] Message from content:', message.type);
+  console.log('[Argus] Action:', message.type, 'Event:', message.eventId || 'N/A');
   
   const handleAsync = async () => {
     try {
       switch (message.type) {
         case 'SET_REMINDER':
+          console.log('[Argus] API: set-reminder for event', message.eventId);
           const setRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/set-reminder', { method: 'POST' });
-          return await setRes.json();
+          const setData = await setRes.json();
+          console.log('[Argus] API response:', setData);
+          return setData;
+          
+        case 'SNOOZE_EVENT':
+          console.log('[Argus] API: snooze for event', message.eventId);
+          const snoozeRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/snooze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ minutes: message.minutes || 30 }),
+          });
+          const snoozeData = await snoozeRes.json();
+          console.log('[Argus] API response:', snoozeData);
+          return snoozeData;
+          
+        case 'IGNORE_EVENT':
+          console.log('[Argus] API: ignore for event', message.eventId);
+          const ignoreRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/ignore', { method: 'POST' });
+          const ignoreData = await ignoreRes.json();
+          console.log('[Argus] API response:', ignoreData);
+          return ignoreData;
           
         case 'ACKNOWLEDGE_REMINDER':
-          const ackRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/acknowledge', { method: 'POST' });
-          return await ackRes.json();
+          return await (await fetch(API_BASE + '/api/events/' + message.eventId + '/acknowledge', { method: 'POST' })).json();
           
         case 'MARK_DONE':
-          const doneRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/done', { method: 'POST' });
-          return await doneRes.json();
+        case 'COMPLETE_EVENT':
+          console.log('[Argus] API: complete for event', message.eventId);
+          const completeRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/complete', { method: 'POST' });
+          const completeData = await completeRes.json();
+          console.log('[Argus] API response:', completeData);
+          return completeData;
           
         case 'DISMISS_EVENT':
-          if (!message.permanent) {
-            dismissEvent(message.eventId);
-          }
+          console.log('[Argus] API: dismiss for event', message.eventId);
+          if (!message.permanent) dismissEvent(message.eventId);
           const dismissRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/dismiss', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              permanent: message.permanent,
-              urlPattern: message.url,
-            }),
+            body: JSON.stringify({ permanent: message.permanent, urlPattern: message.url }),
           });
-          return await dismissRes.json();
+          const dismissData = await dismissRes.json();
+          console.log('[Argus] API response:', dismissData);
+          return dismissData;
           
         case 'DELETE_EVENT':
-          const delRes = await fetch(API_BASE + '/api/events/' + message.eventId, { method: 'DELETE' });
-          return await delRes.json();
-          
-        case 'COMPLETE_EVENT':
-          const compRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/complete', { method: 'POST' });
-          return await compRes.json();
+          console.log('[Argus] API: delete for event', message.eventId);
+          return await (await fetch(API_BASE + '/api/events/' + message.eventId, { method: 'DELETE' })).json();
           
         case 'OPEN_DASHBOARD':
           chrome.tabs.create({ url: 'http://localhost:3000' });
           return { success: true };
           
         case 'GET_STATS':
-          const statsRes = await fetch(API_BASE + '/api/stats');
-          return await statsRes.json();
+          return await (await fetch(API_BASE + '/api/stats')).json();
 
         case 'GET_EVENTS':
-          const eventsRes = await fetch(API_BASE + '/api/events?limit=10');
-          return await eventsRes.json();
+          return await (await fetch(API_BASE + '/api/events?limit=10')).json();
           
         default:
-          return { error: 'Unknown message type' };
+          console.log('[Argus] Unknown message type:', message.type);
+          return { error: 'Unknown message type: ' + message.type };
       }
     } catch (error) {
       console.error('[Argus] API error:', error);
@@ -331,25 +305,15 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   };
   
   handleAsync().then(sendResponse);
-  return true; // Keep channel open for async response
+  return true;
 });
 
 // ============ STARTUP ============
 
-chrome.runtime.onInstalled.addListener(async function() {
-  console.log('[Argus] Extension installed/updated');
-  try {
-    const response = await fetch(API_BASE + '/api/health');
-    if (response.ok) {
-      console.log('[Argus] Backend connected ✅');
-    }
-  } catch (e) {
-    console.log('[Argus] Backend not running. Start with: npm run dev');
-  }
+chrome.runtime.onInstalled.addListener(function() {
+  console.log('[Argus] Extension installed');
   connectWebSocket();
 });
 
-// Connect on startup
 connectWebSocket();
-
-console.log('[Argus] Background Service Worker v2.1 loaded');
+console.log('[Argus] Background v2.3 loaded');

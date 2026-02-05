@@ -1,8 +1,8 @@
 # Argus - Ultra-Simple Architecture
 
-**Version:** 1.0.0 (Simplified)  
-**Last Updated:** February 4, 2026  
-**Status:** Planning Phase
+**Version:** 2.3.0  
+**Last Updated:** February 5, 2026  
+**Status:** Active Development - Chrome Extension + WebSocket Popups Working
 
 ---
 

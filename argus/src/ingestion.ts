@@ -126,36 +126,22 @@ export async function processMessage(
       // Determine context_url based on event type
       let contextUrl: string | null = null;
       
-      // For subscriptions: extract just the service NAME (not full domain)
-      if (event.type === 'subscription') {
-        // Check location and keywords for service name
-        const searchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title}`.toLowerCase();
-        
-        // First try to extract from location field (most specific)
-        if (event.location) {
-          const cleaned = event.location.toLowerCase()
-            .replace(/^https?:\/\//, '')
-            .replace(/^www\./, '')
-            .replace(/\.(com|in|org|net|io|co).*$/, '');
-          if (cleaned.length > 2) {
-            contextUrl = cleaned;
-          }
-        }
-        
-        // If still no match, check known service keywords
-        if (!contextUrl) {
-          const serviceKeywords = [
-            'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify', 
-            'youtube', 'hulu', 'hbo', 'zee5', 'sonyliv', 'jiocinema',
-            'gym', 'domain', 'hosting', 'aws', 'azure', 'vercel', 'heroku'
-          ];
-          
-          for (const service of serviceKeywords) {
-            if (searchText.includes(service)) {
-              contextUrl = service;
-              break;
-            }
-          }
+      // Known streaming/service keywords that should trigger context reminders
+      const serviceKeywords = [
+        'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify', 
+        'youtube', 'hulu', 'hbo', 'zee5', 'sonyliv', 'jiocinema',
+        'gym', 'domain', 'hosting', 'hostinger', 'aws', 'azure', 'vercel', 'heroku'
+      ];
+      
+      // Build search text from all fields
+      const searchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title} ${event.description || ''}`.toLowerCase();
+      
+      // Check for service keywords in ANY event type
+      for (const service of serviceKeywords) {
+        if (searchText.includes(service)) {
+          contextUrl = service;
+          console.log(`[Ingestion] Found context keyword "${service}" in event "${event.title}"`);
+          break;
         }
       }
       
