@@ -128,32 +128,33 @@ export async function processMessage(
       
       // For subscriptions: extract just the service NAME (not full domain)
       if (event.type === 'subscription') {
-        // Known service keywords to match
-        const serviceKeywords = [
-          'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify', 
-          'youtube', 'hulu', 'hbo', 'zee5', 'sonyliv', 'jiocinema',
-          'gym', 'domain', 'hosting', 'aws', 'azure', 'vercel', 'heroku'
-        ];
-        
         // Check location and keywords for service name
         const searchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title}`.toLowerCase();
         
-        for (const service of serviceKeywords) {
-          if (searchText.includes(service)) {
-            contextUrl = service; // Just the keyword, not full domain!
-            break;
-          }
-        }
-        
-        // If no known service found, try to extract from location
-        if (!contextUrl && event.location) {
-          // Remove common URL parts to get just the service name
+        // First try to extract from location field (most specific)
+        if (event.location) {
           const cleaned = event.location.toLowerCase()
             .replace(/^https?:\/\//, '')
             .replace(/^www\./, '')
             .replace(/\.(com|in|org|net|io|co).*$/, '');
           if (cleaned.length > 2) {
             contextUrl = cleaned;
+          }
+        }
+        
+        // If still no match, check known service keywords
+        if (!contextUrl) {
+          const serviceKeywords = [
+            'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify', 
+            'youtube', 'hulu', 'hbo', 'zee5', 'sonyliv', 'jiocinema',
+            'gym', 'domain', 'hosting', 'aws', 'azure', 'vercel', 'heroku'
+          ];
+          
+          for (const service of serviceKeywords) {
+            if (searchText.includes(service)) {
+              contextUrl = service;
+              break;
+            }
           }
         }
       }

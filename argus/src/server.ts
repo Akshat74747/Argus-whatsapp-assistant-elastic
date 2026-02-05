@@ -10,7 +10,7 @@ import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, 
 import { initGemini } from './gemini.js';
 import { processWebhook } from './ingestion.js';
 import { matchContext, extractContextFromUrl } from './matcher.js';
-import { startScheduler, stopScheduler, completeEvent, checkContextTriggers, checkCalendarConflicts } from './scheduler.js';
+import { startScheduler, stopScheduler, completeEvent, checkContextTriggers } from './scheduler.js';
 import { parseConfig, WhatsAppWebhookSchema, ContextCheckRequestSchema } from './types.js';
 import { 
   initEvolutionDb, 
