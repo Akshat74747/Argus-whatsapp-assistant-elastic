@@ -98,6 +98,39 @@ docker-compose down
 5. **Chrome extension** receives real-time event notifications
 6. **Modal overlay** appears on any browser tab with event details
 7. **Context matching** finds relevant events when browsing
+
+## ✅ Working Scenarios
+
+### 1. Netflix Subscription
+```
+Message: "want to cancel my netflix this week"
+Trigger: Visit netflix.com
+Action: Shows reminder popup to cancel subscription
+```
+
+### 2. Goa Cashew (Travel Recommendations)
+```
+Message: "Rahul recommended cashews at Zantye's in Goa"
+Trigger: Visit any URL containing "goa" (goatourism.com, goa-flights.in)
+Action: Shows reminder about the recommendation
+```
+
+### 3. Calendar Conflict
+```
+Message 1: "meeting tomorrow at 5pm"
+Message 2: "call with john tomorrow at 5pm"
+Action: Shows conflict warning popup with overlapping events
+```
+
+## 🔔 Popup Types
+
+| Type | Icon | Use Case |
+|------|------|----------|
+| `event_discovery` | 📅 | New event detected from WhatsApp |
+| `event_reminder` | ⏰ | 1 hour before scheduled event |
+| `context_reminder` | 🎯 | URL matches event context (Netflix, Goa) |
+| `conflict_warning` | ⚠️ | Overlapping events detected |
+| `insight_card` | 💡 | Suggestions and recommendations |
 8. **Proactive notification** appears when visiting related URLs
 
 ### Features
