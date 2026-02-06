@@ -82,11 +82,19 @@ docker-compose down
 |----------|--------|-------------|
 | `/api/health` | GET | Health check |
 | `/api/stats` | GET | Get statistics |
-| `/api/events` | GET | List pending events |
+| `/api/events` | GET | List events (filter by status) |
 | `/api/events/:id` | GET | Get single event |
+| `/api/events/:id/set-reminder` | POST | Schedule event (creates 24h/1h/15min reminders) |
+| `/api/events/:id/snooze` | POST | Snooze event for X minutes |
+| `/api/events/:id/ignore` | POST | Ignore event |
 | `/api/events/:id/complete` | POST | Mark event done |
+| `/api/events/:id/dismiss` | POST | Dismiss notification |
+| `/api/events/:id/acknowledge` | POST | Acknowledge reminder |
+| `/api/events/:id` | DELETE | Delete event permanently |
+| `/api/events/day/:timestamp` | GET | Get all events for a day (reschedule view) |
 | `/api/webhook/whatsapp` | POST | Evolution API webhook |
 | `/api/context-check` | POST | Check URL for relevant events |
+| `/api/chat` | POST | AI Chat - context-aware conversation |
 | `/ws` | WebSocket | Real-time notifications |
 
 ## 🎯 How It Works
@@ -115,7 +123,14 @@ Trigger: Visit any URL containing "goa" (goatourism.com, goa-flights.in)
 Action: Shows reminder about the recommendation
 ```
 
-### 3. Calendar Conflict
+### 3. Canva Subscription
+```
+Message: "I need to get Canva Pro for my design work"
+Trigger: Visit canva.com
+Action: Shows context reminder about Canva Pro subscription
+```
+
+### 4. Calendar Conflict
 ```
 Message 1: "meeting tomorrow at 5pm"
 Message 2: "call with john tomorrow at 5pm"
@@ -127,9 +142,9 @@ Action: Shows conflict warning popup with overlapping events
 | Type | Icon | Use Case |
 |------|------|----------|
 | `event_discovery` | 📅 | New event detected from WhatsApp |
-| `event_reminder` | ⏰ | 1 hour before scheduled event |
-| `context_reminder` | 🎯 | URL matches event context (Netflix, Goa) |
-| `conflict_warning` | ⚠️ | Overlapping events detected |
+| `event_reminder` | ⏰ | Reminders at 24h, 1h, and 15min before event |
+| `context_reminder` | 🎯 | URL matches event context (Netflix, Goa, Canva) |
+| `conflict_warning` | 🗓️ | Overlapping events — shows "View My Day" timeline |
 | `insight_card` | 💡 | Suggestions and recommendations |
 8. **Proactive notification** appears when visiting related URLs
 

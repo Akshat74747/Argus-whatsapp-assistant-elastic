@@ -46,7 +46,7 @@ export const EventSchema = z.object({
 export type Event = z.infer<typeof EventSchema>;
 
 // ============ Trigger Schemas ============
-export const TriggerTypeEnum = z.enum(['time', 'url', 'keyword', 'reminder_1hr']);
+export const TriggerTypeEnum = z.enum(['time', 'time_24h', 'time_1h', 'time_15m', 'url', 'keyword', 'reminder_24h', 'reminder_1hr', 'reminder_15m']);
 export type TriggerType = z.infer<typeof TriggerTypeEnum>;
 
 export const TriggerSchema = z.object({

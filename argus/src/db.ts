@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import type { Message, Event, Trigger, Contact } from './types.js';
+import type { Message, Event, Trigger, Contact, TriggerType } from './types.js';
 
 let db: Database.Database | null = null;
 
@@ -311,7 +311,7 @@ export function insertTrigger(trigger: Omit<Trigger, 'id' | 'created_at'>): numb
   return result.lastInsertRowid as number;
 }
 
-export function getUnfiredTriggersByType(type: 'time' | 'url' | 'keyword'): Trigger[] {
+export function getUnfiredTriggersByType(type: string): Trigger[] {
   const stmt = getDb().prepare(`
     SELECT * FROM triggers WHERE trigger_type = ? AND is_fired = 0
   `);
@@ -534,34 +534,50 @@ export function deleteEvent(id: number): void {
 
 // ============ Enhanced Event Operations ============
 
-// Schedule a reminder for an event (1 hour before event_time)
+// Schedule reminders for an event at multiple intervals (24h, 1h, 15min before)
 export function scheduleEventReminder(eventId: number): void {
   const event = getEventById(eventId);
-  if (!event || !event.event_time) return;
-  
-  // Set reminder 1 hour before event
-  const reminderTime = event.event_time - 3600; // 1 hour = 3600 seconds
+  if (!event) {
+    const stmt = getDb().prepare(`UPDATE events SET status = 'scheduled' WHERE id = ?`);
+    stmt.run(eventId);
+    return;
+  }
+
+  if (!event.event_time) {
+    // No event_time — mark as scheduled (URL/context-based events)
+    const stmt = getDb().prepare(`UPDATE events SET status = 'scheduled' WHERE id = ?`);
+    stmt.run(eventId);
+    return;
+  }
+
   const now = Math.floor(Date.now() / 1000);
-  
-  // Only set if reminder time is in the future
-  if (reminderTime > now) {
-    const stmt = getDb().prepare(`
-      UPDATE events SET status = 'scheduled', reminder_time = ? WHERE id = ?
-    `);
-    stmt.run(reminderTime, eventId);
-    
-    // Also create a time trigger
-    insertTrigger({
-      event_id: eventId,
-      trigger_type: 'reminder_1hr',
-      trigger_value: reminderTime.toString(),
-      is_fired: false,
-    });
+  const intervals: Array<{ type: TriggerType; offset: number }> = [
+    { type: 'reminder_24h', offset: 24 * 60 * 60 },
+    { type: 'reminder_1hr', offset: 60 * 60 },
+    { type: 'reminder_15m', offset: 15 * 60 },
+  ];
+
+  // Set the earliest future reminder as the primary reminder_time
+  let primaryReminderTime: number | null = null;
+  for (const { type, offset } of intervals) {
+    const triggerTime = event.event_time - offset;
+    if (triggerTime > now) {
+      if (!primaryReminderTime) primaryReminderTime = triggerTime;
+      insertTrigger({
+        event_id: eventId,
+        trigger_type: type,
+        trigger_value: triggerTime.toString(),
+        is_fired: false,
+      });
+    }
+  }
+
+  if (primaryReminderTime) {
+    const stmt = getDb().prepare(`UPDATE events SET status = 'scheduled', reminder_time = ? WHERE id = ?`);
+    stmt.run(primaryReminderTime, eventId);
   } else {
-    // Event is within 1 hour or past, mark as scheduled without reminder
-    const stmt = getDb().prepare(`
-      UPDATE events SET status = 'scheduled' WHERE id = ?
-    `);
+    // All intervals already passed, just mark as scheduled
+    const stmt = getDb().prepare(`UPDATE events SET status = 'scheduled' WHERE id = ?`);
     stmt.run(eventId);
   }
 }
@@ -611,6 +627,23 @@ export function getContextEventsForUrl(url: string): Event[] {
     });
   }
   return results;
+}
+
+// Get all events for a specific day (for reschedule/day-view)
+export function getEventsForDay(dayTimestamp: number): Event[] {
+  const d = new Date(dayTimestamp * 1000);
+  d.setHours(0, 0, 0, 0);
+  const startOfDay = Math.floor(d.getTime() / 1000);
+  const endOfDay = startOfDay + 24 * 60 * 60;
+  
+  const stmt = getDb().prepare(`
+    SELECT * FROM events
+    WHERE event_time IS NOT NULL
+    AND event_time BETWEEN ? AND ?
+    AND status NOT IN ('ignored', 'expired')
+    ORDER BY event_time ASC
+  `);
+  return stmt.all(startOfDay, endOfDay) as Event[];
 }
 
 // Check for calendar conflicts with existing events

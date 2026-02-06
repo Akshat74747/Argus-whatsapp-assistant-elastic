@@ -20,6 +20,18 @@ function getConfig(): GeminiConfig {
   return config;
 }
 
+const SYSTEM_PROMPT = `You are the AI brain of Argus, a proactive WhatsApp memory assistant. Your job is to intelligently extract, classify, and match events from casual WhatsApp conversations.
+
+CRITICAL RULES:
+- Understand Hinglish (Hindi + English mix), broken English, typos, and informal chat language
+- Distinguish REAL events/tasks from spam, forwarded promotions, memes, and casual chatter
+- A message like "get canva at 199" or "netflix at just 99" is a PROMOTIONAL/SPAM message, NOT a genuine user intent — set confidence < 0.3
+- Genuine intent examples: "I want to cancel netflix", "need to get canva pro for work", "bro try cashews at Zantyes in Goa"
+- Always consider the FULL conversation context — who said what, and whether it is the USER's own intent vs someone forwarding a deal
+- Be conservative: fewer false positives is much better than catching everything
+- When the sender is a business/brand account, treat messages as promotional (low confidence)
+- Return valid JSON only`;
+
 async function callGemini(prompt: string, jsonMode = true): Promise<string> {
   const cfg = getConfig();
   
@@ -31,7 +43,10 @@ async function callGemini(prompt: string, jsonMode = true): Promise<string> {
     },
     body: JSON.stringify({
       model: cfg.model,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ],
       temperature: 0.1,
       max_tokens: 2000,
       ...(jsonMode && { response_format: { type: 'json_object' } }),
@@ -245,7 +260,17 @@ CRITICAL DATE/TIME RULE:
 - If no event/task found, return: {"events": []}
 - Keywords should include: location names, service names, product names, people names, group names
 - Confidence < 0.5 if uncertain
-- Even casual mentions of tasks/intentions should be captured with lower confidence`;
+- Even casual mentions of tasks/intentions should be captured with lower confidence
+
+SPAM/PROMOTION FILTER (VERY IMPORTANT):
+- Messages like "Get X at just ₹199" or "X Pro at 50% off" are PROMOTIONS, not user intent
+- Forwarded deal messages, brand/business account messages = promotional (confidence < 0.3)
+- "I want to get canva pro" = genuine intent (confidence 0.8+)
+- "Get Canva Pro at just ₹200" = promotional spam (confidence 0.2)
+- "Bro try the cashews at Zantyes" from a friend = genuine recommendation (confidence 0.9)
+- "Best cashews! Order now at 40% off!" = spam (confidence 0.1)
+- Price mentions like "at just 99", "only ₹199", "50% off" are strong spam signals
+- If uncertain whether genuine or spam, set confidence < 0.4`;
 
   const response = await callGemini(prompt);
   

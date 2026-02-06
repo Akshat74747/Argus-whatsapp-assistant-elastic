@@ -2,6 +2,54 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.5.0] - 2026-02-06
+
+### Added
+- **Multi-Interval Alerts** - Events now create 3 time triggers (24h, 1h, 15min before) instead of just 1
+  - `ingestion.ts`: Creates `time_24h`, `time_1h`, `time_15m` triggers per event
+  - `db.ts`: `scheduleEventReminder()` creates `reminder_24h`, `reminder_1hr`, `reminder_15m` triggers
+  - `scheduler.ts`: `checkTimeTriggers()` now checks all 7 time-based trigger types
+  - `types.ts`: `TriggerTypeEnum` expanded with new trigger types
+- **View My Day (Reschedule UX)** - Conflict popup now shows "📅 View My Day" button
+  - `db.ts`: New `getEventsForDay(dayTimestamp)` function — returns all events for a calendar day
+  - `server.ts`: New `GET /api/events/day/:timestamp` endpoint
+  - `background.js`: New `GET_DAY_EVENTS` message handler
+  - `content.js`: `showDayScheduleInline()` renders inline day timeline in conflict modal with color-coded dots (green=ok, red=overlap, blue=new)
+- **Gemini System Prompt** - All Gemini calls now include a system message via `SYSTEM_PROMPT` constant
+  - Defines Argus identity, Hinglish understanding, spam/promo detection rules
+  - `callGemini()` now sends `[{role: 'system'}, {role: 'user'}]` instead of just user
+- **Spam/Promotion Filter** - `extractEvents()` prompt now includes explicit spam detection rules
+  - Price patterns ("at just ₹199", "50% off") flagged as promotional (confidence < 0.3)
+  - Brand/business sender detection
+  - Clear examples: genuine intent vs spam
+- **Service Keywords Expanded** - Added canva, figma, notion, slack, zoom to `serviceKeywords` in ingestion.ts
+
+### Changed
+- **Dashboard: "Active Triggers" → "Scheduled"** - Hid internal trigger count from users; now shows `scheduledEvents` count instead
+- **Conflict Popup Buttons** - Changed from "🔄 Suggest Another Time" to "📅 View My Day" (primary), "✅ Keep Both" (secondary)
+
+### Technical
+- `getUnfiredTriggersByType()` signature changed from union literal to `string` for flexibility
+- `TriggerType` import added to `db.ts` and `ingestion.ts` for typed interval arrays
+
+## [2.4.2] - 2026-02-06
+
+### Fixed
+- **Canva Events Not Triggering** - `getContextEventsForUrl()` now matches by `location` field when `context_url` is null (OR clause in SQL)
+- **Scheduled Events Not Found** - `searchEventsByLocation()` and `searchEventsByKeywords()` now check `status IN ('pending', 'scheduled')` instead of just `'pending'`
+- **Canva URL Not Detected** - Added `canva.com` pattern to `URL_PATTERNS` in matcher.ts
+
+### Changed
+- **Humanized Conflict Popup** - Changed from "Schedule Conflict!" to "Hmm, you might be double-booked" with conversational tone
+- **Conflict Detail Section** - Changed from red to orange styling, added formatted date/time display
+
+### Tested
+- All 4 scenarios pass via `test-scenarios.sh`:
+  - Goa Cashew: 4 context triggers
+  - Netflix Cancel: 1 trigger
+  - Canva Pro: 2 triggers ("Get Canva Pro" + "Canva Pro Edu")
+  - Calendar Conflict: AI correctly identifies overlapping Team standup + Client call
+
 ## [2.4.1] - 2026-02-06
 
 ### Fixed

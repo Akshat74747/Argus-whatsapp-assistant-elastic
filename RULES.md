@@ -90,6 +90,7 @@ postgres:16-alpine          # Evolution DB
 | /api/events/:id/dismiss | POST | Dismiss notification |
 | /api/events/:id/acknowledge | POST | Acknowledge reminder |
 | /api/events/:id | DELETE | Delete event permanently |
+| /api/events/day/:timestamp | GET | Get all events for a day (reschedule view) |
 | /api/webhook/whatsapp | POST | WhatsApp webhook |
 | /api/context-check | POST | Check URL context |
 | /api/chat | POST | AI Chat - context-aware conversation |

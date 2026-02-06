@@ -316,7 +316,12 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
 
         case 'GET_EVENTS':
           return await (await fetch(API_BASE + '/api/events?limit=10')).json();
-          
+
+        case 'GET_DAY_EVENTS':
+          console.log('[Argus] API: get day events for timestamp', message.timestamp);
+          const dayRes = await fetch(API_BASE + '/api/events/day/' + message.timestamp);
+          return await dayRes.json();
+
         default:
           console.log('[Argus] Unknown message type:', message.type);
           return { error: 'Unknown message type: ' + message.type };

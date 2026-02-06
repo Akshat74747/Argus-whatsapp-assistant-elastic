@@ -6,7 +6,7 @@ import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent } from './db.js';
+import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent, getEventsForDay } from './db.js';
 import { initGemini, chatWithContext } from './gemini.js';
 import { processWebhook } from './ingestion.js';
 import { matchContext, extractContextFromUrl } from './matcher.js';
@@ -264,6 +264,25 @@ app.post('/api/events/:id/context-url', (req: Request, res: Response) => {
   
   setEventContextUrl(id, url);
   res.json({ success: true, message: 'Context URL set' });
+});
+
+// Get all events for a specific day (used by conflict reschedule popup)
+app.get('/api/events/day/:timestamp', (req: Request, res: Response) => {
+  try {
+    const timestamp = parseInt(req.params.timestamp as string);
+    if (isNaN(timestamp)) {
+      res.status(400).json({ error: 'Invalid timestamp' });
+      return;
+    }
+    const events = getEventsForDay(timestamp);
+    const d = new Date(timestamp * 1000);
+    res.json({
+      date: d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+      events,
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch day events' });
+  }
 });
 
 // Get events by status (for extension to fetch discovered events)

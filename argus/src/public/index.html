@@ -157,7 +157,7 @@
           <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value orange" id="stat-pending">0</div></div>
           <div class="stat-card"><div class="stat-label">Completed</div><div class="stat-value green" id="stat-completed">0</div></div>
           <div class="stat-card"><div class="stat-label">WhatsApp Messages</div><div class="stat-value purple" id="stat-wa-messages">0</div></div>
-          <div class="stat-card"><div class="stat-label">Active Triggers</div><div class="stat-value red" id="stat-triggers">0</div></div>
+          <div class="stat-card"><div class="stat-label">Scheduled</div><div class="stat-value red" id="stat-scheduled">0</div></div>
         </div>
         <div class="grid-2">
           <div class="card">
@@ -381,7 +381,7 @@ WebSocket: ws://localhost:3000
         document.getElementById('stat-events').textContent = data.events || 0;
         document.getElementById('stat-pending').textContent = (data.discoveredEvents || 0) + (data.snoozedEvents || 0);
         document.getElementById('stat-completed').textContent = data.completedEvents || 0;
-        document.getElementById('stat-triggers').textContent = data.triggers || 0;
+        document.getElementById('stat-scheduled').textContent = data.scheduledEvents || 0;
         document.getElementById('pending-badge').textContent = (data.discoveredEvents || 0) + (data.snoozedEvents || 0);
         if (data.evolution) {
           document.getElementById('stat-wa-messages').textContent = data.evolution.totalMessages || 0;

@@ -175,7 +175,12 @@ export function checkCalendarConflicts(eventId: number, eventTime: number): Noti
 
 function checkTimeTriggers(): void {
   const now = Date.now();
-  const triggers = getUnfiredTriggersByType('time');
+  // Check all time-based trigger types (multi-interval: 24h, 1h, 15min)
+  const triggerTypes = ['time', 'time_24h', 'time_1h', 'time_15m', 'reminder_24h', 'reminder_1hr', 'reminder_15m'];
+  let triggers: any[] = [];
+  for (const tt of triggerTypes) {
+    triggers = triggers.concat(getUnfiredTriggersByType(tt));
+  }
   
   for (const trigger of triggers) {
     try {

@@ -1,6 +1,6 @@
 import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEventTime } from './db.js';
 import { extractEvents, classifyMessage, detectAction } from './gemini.js';
-import type { Message, WhatsAppWebhook } from './types.js';
+import type { Message, WhatsAppWebhook, TriggerType } from './types.js';
 
 interface ConflictInfo {
   id: number;
@@ -238,6 +238,7 @@ export async function processMessage(
       const serviceKeywords = [
         'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify', 
         'youtube', 'hulu', 'hbo', 'zee5', 'sonyliv', 'jiocinema',
+        'canva', 'figma', 'notion', 'slack', 'zoom',
         'gym', 'domain', 'hosting', 'hostinger', 'aws', 'azure', 'vercel', 'heroku'
       ];
       
@@ -337,15 +338,26 @@ export async function processMessage(
       }
 
       // Create triggers
-      // Time-based trigger
+      // Time-based triggers at 3 intervals: 24h, 1h, 15min before event
       if (eventTime) {
-        insertTrigger({
-          event_id: eventId,
-          trigger_type: 'time',
-          trigger_value: new Date(eventTime * 1000).toISOString(),
-          is_fired: false,
-        });
-        triggersCreated++;
+        const intervals: Array<{ type: TriggerType; offset: number }> = [
+          { type: 'time_24h', offset: 24 * 60 * 60 },
+          { type: 'time_1h', offset: 60 * 60 },
+          { type: 'time_15m', offset: 15 * 60 },
+        ];
+        const now = Math.floor(Date.now() / 1000);
+        for (const { type, offset } of intervals) {
+          const triggerTime = eventTime - offset;
+          if (triggerTime > now) {
+            insertTrigger({
+              event_id: eventId,
+              trigger_type: type,
+              trigger_value: new Date(triggerTime * 1000).toISOString(),
+              is_fired: false,
+            });
+            triggersCreated++;
+          }
+        }
       }
 
       // Location/URL triggers

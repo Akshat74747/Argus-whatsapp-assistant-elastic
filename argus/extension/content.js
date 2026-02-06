@@ -449,8 +449,8 @@
           subtitle: sender !== 'Someone' ? sender + ' mentioned this — but you already have plans' : 'Let\'s sort out your schedule',
           question: friendlyQuestion,
           buttons: [
-            { text: '🔄 Suggest Another Time', action: 'snooze', style: 'primary' },
-            { text: '📅 Keep Both', action: 'acknowledge', style: 'secondary' },
+            { text: '� View My Day', action: 'view-day', style: 'primary' },
+            { text: '✅ Keep Both', action: 'acknowledge', style: 'secondary' },
             { text: '🚫 Skip This One', action: 'ignore', style: 'outline' },
           ]
         };
@@ -754,9 +754,81 @@
         console.log(`[Argus] 👁️ Opening dashboard`);
         chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD' });
         break;
+
+      case 'view-day':
+        console.log(`[Argus] 📅 View My Day for event #${eventId}`);
+        // Get event timestamp for the day
+        var dayTimestamp = event.event_time || Math.floor(Date.now() / 1000);
+        chrome.runtime.sendMessage(
+          { type: 'GET_DAY_EVENTS', timestamp: dayTimestamp },
+          function(response) {
+            if (response && response.events) {
+              showDayScheduleInline(response.date, response.events, event);
+            } else {
+              showToast('📅 No events found', 'Your day looks clear!');
+            }
+          }
+        );
+        // Don't close modal — we'll update it inline
+        return;
     }
 
     closeModal();
+  }
+
+  // ============ DAY SCHEDULE VIEW ============
+  function showDayScheduleInline(dateLabel, events, currentEvent) {
+    var modal = document.querySelector('#argus-modal');
+    if (!modal) return;
+
+    // Find or create the day-schedule container inside the modal body
+    var existing = modal.querySelector('.argus-day-schedule');
+    if (existing) existing.remove();
+
+    var container = document.createElement('div');
+    container.className = 'argus-day-schedule';
+    container.style.cssText = 'margin: 12px 20px; padding: 14px 16px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
+
+    var header = '<div style="font-weight: 600; font-size: 13px; color: #0369a1; margin-bottom: 10px;">📅 Your day: ' + escapeHtml(dateLabel || 'Today') + '</div>';
+
+    var timeline = '';
+    if (events.length === 0) {
+      timeline = '<div style="color: #64748b; font-size: 12px; padding: 8px 0;">Nothing scheduled — your day is wide open! 🎉</div>';
+    } else {
+      events.forEach(function(ev) {
+        var time = '';
+        if (ev.event_time) {
+          var d = new Date(ev.event_time * 1000);
+          time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        }
+        var isCurrent = currentEvent && ev.id === currentEvent.id;
+        var isConflict = currentEvent && currentEvent.event_time && ev.event_time &&
+          Math.abs(ev.event_time - currentEvent.event_time) < 3600 && ev.id !== currentEvent.id;
+        
+        var dotColor = isConflict ? '#ef4444' : (isCurrent ? '#3b82f6' : '#10b981');
+        var bg = isConflict ? 'background: #fef2f2;' : (isCurrent ? 'background: #eff6ff;' : '');
+        var label = isConflict ? ' <span style="color: #ef4444; font-size: 10px;">⚠️ overlaps</span>' : '';
+        if (isCurrent) label = ' <span style="color: #3b82f6; font-size: 10px;">← new</span>';
+
+        timeline += '<div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; margin-bottom: 4px; ' + bg + '">';
+        timeline += '<div style="width: 8px; height: 8px; border-radius: 50%; background: ' + dotColor + '; flex-shrink: 0;"></div>';
+        timeline += '<span style="font-size: 11px; color: #64748b; min-width: 55px;">' + (time || 'All day') + '</span>';
+        timeline += '<span style="font-size: 12px; color: #1e293b; font-weight: 500;">' + escapeHtml(ev.title) + '</span>';
+        timeline += label;
+        timeline += '</div>';
+      });
+    }
+
+    container.innerHTML = header + timeline;
+
+    // Insert before the actions div
+    var actionsDiv = modal.querySelector('.argus-actions');
+    if (actionsDiv) {
+      actionsDiv.parentNode.insertBefore(container, actionsDiv);
+    } else {
+      var body = modal.querySelector('.argus-body');
+      if (body) body.appendChild(container);
+    }
   }
 
   // ============ TOAST FUNCTIONS ============
