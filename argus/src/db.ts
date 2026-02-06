@@ -260,7 +260,7 @@ export function searchEventsByLocation(location: string, days = 90, limit = 10):
   const cutoff = Math.floor(Date.now() / 1000) - days * 24 * 60 * 60;
   const stmt = getDb().prepare(`
     SELECT * FROM events
-    WHERE location LIKE ? AND status = 'pending' AND created_at > ?
+    WHERE location LIKE ? AND status IN ('pending', 'scheduled') AND created_at > ?
     ORDER BY created_at DESC
     LIMIT ?
   `);
@@ -282,7 +282,7 @@ export function searchEventsByKeywords(keywords: string[], days = 90, limit = 10
     const stmt = getDb().prepare(`
       SELECT e.* FROM events e
       JOIN events_fts f ON e.id = f.rowid
-      WHERE events_fts MATCH ? AND e.status = 'pending' AND e.created_at > ?
+      WHERE events_fts MATCH ? AND e.status IN ('pending', 'scheduled') AND e.created_at > ?
       ORDER BY rank
       LIMIT ?
     `);
@@ -293,7 +293,7 @@ export function searchEventsByKeywords(keywords: string[], days = 90, limit = 10
     const likeParams = keywords.flatMap(kw => [`%${kw}%`, `%${kw}%`, `%${kw}%`]);
     const stmt = getDb().prepare(`
       SELECT * FROM events
-      WHERE (${likeConditions}) AND status = 'pending' AND created_at > ?
+      WHERE (${likeConditions}) AND status IN ('pending', 'scheduled') AND created_at > ?
       ORDER BY created_at DESC
       LIMIT ?
     `);
@@ -587,23 +587,27 @@ export function markEventReminded(eventId: number): void {
 
 // Get events with context URL that match a given URL
 // Matches if URL contains the context_url keyword (case-insensitive)
+// Also matches by location field when context_url is null (e.g., canva events)
 // Only returns SCHEDULED events (user must have approved them first)
 export function getContextEventsForUrl(url: string): Event[] {
   const urlLower = url.toLowerCase();
   console.log(`🔎 [DB] getContextEventsForUrl: url="${url}"`);
   
+  // Match by context_url OR by location field
   const stmt = getDb().prepare(`
     SELECT * FROM events
-    WHERE context_url IS NOT NULL 
-    AND context_url != ''
-    AND status = 'scheduled'
-    AND LOWER(?) LIKE '%' || LOWER(context_url) || '%'
+    WHERE status = 'scheduled'
+    AND (
+      (context_url IS NOT NULL AND context_url != '' AND LOWER(?) LIKE '%' || LOWER(context_url) || '%')
+      OR
+      (location IS NOT NULL AND location != '' AND (context_url IS NULL OR context_url = '') AND LOWER(?) LIKE '%' || LOWER(location) || '%')
+    )
   `);
-  const results = stmt.all(urlLower) as Event[];
+  const results = stmt.all(urlLower, urlLower) as Event[];
   console.log(`📊 [DB] Query returned ${results.length} event(s) with status='scheduled'`);
   if (results.length > 0) {
     results.forEach(e => {
-      console.log(`   └─ Event #${e.id}: "${e.title}" (status: ${e.status}, context_url: ${e.context_url})`);
+      console.log(`   └─ Event #${e.id}: "${e.title}" (status: ${e.status}, context_url: ${e.context_url}, location: ${e.location})`);
     });
   }
   return results;

@@ -23,6 +23,7 @@ const URL_PATTERNS: Array<{ pattern: RegExp; activity: string; keywords: (match:
   { pattern: /spotify\.com/i, activity: 'music', keywords: () => ['spotify', 'subscription', 'music'] },
   { pattern: /primevideo\.com/i, activity: 'streaming', keywords: () => ['prime', 'amazon', 'subscription'] },
   { pattern: /hotstar\.com|disney\+/i, activity: 'streaming', keywords: () => ['hotstar', 'disney', 'subscription'] },
+  { pattern: /canva\.com/i, activity: 'design', keywords: () => ['canva', 'design', 'subscription'] },
   
   // Finance
   { pattern: /policybazaar\.com.*\/(car|bike|health|life)/i, activity: 'insurance', keywords: m => [m[1], 'insurance'] },
