@@ -1,5 +1,5 @@
-// Argus Background Service Worker v2.2
-// Handles: WebSocket connection, API calls, context triggers, reminder flow
+// Argus Background Service Worker v2.4
+// Handles: WebSocket connection, API calls, context triggers, reminder flow, sidePanel
 // NOTE: All popups are shown via content.js overlay - NO Chrome notifications
 
 const API_BASE = 'http://localhost:3000';
