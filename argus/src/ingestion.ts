@@ -1,5 +1,5 @@
-import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts } from './db.js';
-import { extractEvents, classifyMessage } from './gemini.js';
+import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEventTime } from './db.js';
+import { extractEvents, classifyMessage, detectAction } from './gemini.js';
 import type { Message, WhatsAppWebhook } from './types.js';
 
 interface ConflictInfo {
@@ -19,7 +19,15 @@ interface CreatedEvent {
   keywords: string;
   confidence: number;
   context_url?: string | null;
+  sender_name?: string | null;
   conflicts?: ConflictInfo[];
+}
+
+interface ActionResult {
+  action: string;
+  targetEventId: number | null;
+  targetEventTitle: string | null;
+  message: string;
 }
 
 interface IngestionResult {
@@ -30,6 +38,8 @@ interface IngestionResult {
   skipReason?: string;
   events?: CreatedEvent[];
   conflicts?: Array<{ eventId: number; conflictsWith: ConflictInfo[] }>;
+  // Action results (for when user sends "cancel it", "done", etc.)
+  actionPerformed?: ActionResult;
 }
 
 export async function processWebhook(
@@ -60,6 +70,8 @@ export async function processWebhook(
     ? parseInt(data.messageTimestamp) 
     : data.messageTimestamp;
 
+  const senderName = data.pushName || null;
+
   const message: Message = {
     id: data.key.id,
     chat_id: data.key.remoteJid,
@@ -74,7 +86,7 @@ export async function processWebhook(
   // Update contact
   upsertContact({
     id: message.sender,
-    name: data.pushName || null,
+    name: senderName,
     first_seen: timestamp,
     last_seen: timestamp,
     message_count: 1,
@@ -92,15 +104,111 @@ export async function processWebhook(
     .filter(m => m.id !== message.id)
     .map(m => m.content);
 
-  // Extract events
-  const result = await processMessage(message, context);
+  // ============ STEP 1: Check if this is an ACTION on existing event ============
+  const activeEvents = getActiveEvents(20);
+  const actionResult = await detectAction(content, context, activeEvents.map(e => ({
+    id: e.id!,
+    title: e.title,
+    event_type: e.event_type,
+    keywords: e.keywords,
+  })));
+
+  if (actionResult.isAction && actionResult.confidence >= 0.6) {
+    console.log(`🎯 [ACTION] Detected action: "${actionResult.action}" on "${actionResult.targetDescription}" (confidence: ${actionResult.confidence})`);
+    
+    // Find the target event
+    let targetEvent = null;
+    
+    // Try to find by keywords
+    if (actionResult.targetKeywords.length > 0) {
+      const matches = findActiveEventsByKeywords(actionResult.targetKeywords);
+      if (matches.length > 0) {
+        targetEvent = matches[0]; // Best match
+      }
+    }
+    
+    // Fallback: use most recent active event
+    if (!targetEvent && activeEvents.length > 0) {
+      targetEvent = activeEvents[0];
+    }
+
+    if (targetEvent && targetEvent.id) {
+      const eventId = targetEvent.id;
+      let actionMessage = '';
+
+      switch (actionResult.action) {
+        case 'cancel':
+        case 'delete':
+          deleteEvent(eventId);
+          actionMessage = `Deleted: "${targetEvent.title}"`;
+          console.log(`🗑️ [ACTION] Deleted event #${eventId}: "${targetEvent.title}"`);
+          break;
+
+        case 'complete':
+          dbCompleteEvent(eventId);
+          actionMessage = `Completed: "${targetEvent.title}"`;
+          console.log(`✅ [ACTION] Completed event #${eventId}: "${targetEvent.title}"`);
+          break;
+
+        case 'ignore':
+          ignoreEvent(eventId);
+          actionMessage = `Ignored: "${targetEvent.title}" - won't remind again`;
+          console.log(`🚫 [ACTION] Ignored event #${eventId}: "${targetEvent.title}"`);
+          break;
+
+        case 'snooze':
+        case 'postpone':
+          const minutes = actionResult.snoozeMinutes || 30;
+          snoozeEvent(eventId, minutes);
+          const durationText = minutes >= 10080 ? 'next week' : minutes >= 1440 ? 'tomorrow' : minutes >= 60 ? `${Math.round(minutes / 60)} hours` : `${minutes} minutes`;
+          actionMessage = `Snoozed: "${targetEvent.title}" → will remind ${durationText}`;
+          console.log(`💤 [ACTION] Snoozed event #${eventId} for ${minutes} min: "${targetEvent.title}"`);
+          break;
+
+        case 'modify':
+          if (actionResult.newTime) {
+            try {
+              const newTime = Math.floor(new Date(actionResult.newTime).getTime() / 1000);
+              updateEventTime(eventId, newTime);
+              actionMessage = `Rescheduled: "${targetEvent.title}" → ${new Date(newTime * 1000).toLocaleString()}`;
+              console.log(`📅 [ACTION] Rescheduled event #${eventId}: "${targetEvent.title}"`);
+            } catch {
+              actionMessage = `Could not reschedule: invalid time`;
+            }
+          } else {
+            actionMessage = `Modify requested but no new time provided`;
+          }
+          break;
+
+        default:
+          actionMessage = `Unknown action: ${actionResult.action}`;
+      }
+
+      return {
+        messageId: message.id,
+        eventsCreated: 0,
+        triggersCreated: 0,
+        skipped: false,
+        actionPerformed: {
+          action: actionResult.action,
+          targetEventId: eventId,
+          targetEventTitle: targetEvent.title,
+          message: actionMessage,
+        },
+      };
+    }
+  }
+
+  // ============ STEP 2: Not an action → extract NEW events ============
+  const result = await processMessage(message, context, senderName);
   
   return result;
 }
 
 export async function processMessage(
   message: Message,
-  context: string[] = []
+  context: string[] = [],
+  senderName: string | null = null
 ): Promise<IngestionResult> {
   let eventsCreated = 0;
   let triggersCreated = 0;
@@ -153,10 +261,10 @@ export async function processMessage(
           'thailand', 'bali', 'singapore', 'dubai', 'maldives', 'europe'
         ];
         
-        const searchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title} ${event.description || ''}`.toLowerCase();
+        const travelSearchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title} ${event.description || ''}`.toLowerCase();
         
         for (const place of travelKeywords) {
-          if (searchText.includes(place)) {
+          if (travelSearchText.includes(place)) {
             contextUrl = place;
             break;
           }
@@ -176,7 +284,11 @@ export async function processMessage(
         }
       }
 
-      // Insert event with 'discovered' status - user needs to approve and set reminder
+      // For events WITHOUT a time, auto-schedule them (context/URL-based events)
+      // For events WITH a time, they start as 'discovered' and user can set reminder
+      const initialStatus = eventTime ? 'discovered' as const : 'scheduled' as const;
+
+      // Insert event
       const eventData = {
         message_id: message.id,
         event_type: event.type,
@@ -187,8 +299,9 @@ export async function processMessage(
         participants: JSON.stringify(event.participants),
         keywords: event.keywords.join(','),
         confidence: event.confidence,
-        status: 'discovered' as const,
+        status: initialStatus,
         context_url: contextUrl,
+        sender_name: senderName,
       };
       const eventId = insertEvent(eventData);
       eventsCreated++;
@@ -205,6 +318,7 @@ export async function processMessage(
         keywords: event.keywords.join(','),
         confidence: event.confidence,
         context_url: contextUrl,
+        sender_name: senderName,
       });
 
       // Check for calendar conflicts
@@ -247,7 +361,7 @@ export async function processMessage(
 
       // Keyword triggers (for important keywords)
       const importantKeywords = event.keywords.filter(kw => 
-        ['travel', 'flight', 'hotel', 'buy', 'gift', 'birthday', 'meeting', 'deadline'].some(ik => kw.toLowerCase().includes(ik))
+        ['travel', 'flight', 'hotel', 'buy', 'gift', 'birthday', 'meeting', 'deadline', 'dinner', 'lunch', 'coffee'].some(ik => kw.toLowerCase().includes(ik))
       );
       for (const kw of importantKeywords.slice(0, 3)) {
         insertTrigger({

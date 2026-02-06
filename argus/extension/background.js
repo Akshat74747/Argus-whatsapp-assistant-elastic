@@ -103,6 +103,29 @@ async function handleWebSocketMessage(data) {
         message: data.message,
       });
       break;
+
+    case 'context_reminder':
+      console.log('[Argus] Context reminder:', data.event?.title);
+      if (data.event && !isEventDismissed(data.event.id)) {
+        await sendToFirstAvailableTab({
+          type: 'ARGUS_CONTEXT_REMINDER',
+          event: data.event,
+          url: data.url,
+        });
+      }
+      break;
+
+    case 'action_performed':
+      console.log('[Argus] Action:', data.action, 'on', data.eventTitle);
+      // Show a toast notification for the action
+      await sendToFirstAvailableTab({
+        type: 'ARGUS_ACTION_TOAST',
+        action: data.action,
+        eventId: data.eventId,
+        eventTitle: data.eventTitle,
+        message: data.message,
+      });
+      break;
   }
 }
 
@@ -308,6 +331,32 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   return true;
 });
 
+// ============ SIDE PANEL ============
+
+// Enable side panel to open on action click
+try {
+  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
+      .catch(function(e) { console.log('[Argus] sidePanel behavior error:', e); });
+  }
+} catch (e) {}
+
+// Allow opening side panel via context menu or keyboard shortcut
+chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+  if (message.type === 'OPEN_SIDE_PANEL') {
+    try {
+      if (chrome.sidePanel && chrome.sidePanel.open) {
+        chrome.sidePanel.open({ windowId: sender.tab ? sender.tab.windowId : undefined })
+          .then(function() { sendResponse({ success: true }); })
+          .catch(function(e) { sendResponse({ error: e.message }); });
+        return true;
+      }
+    } catch (e) {}
+    sendResponse({ error: 'sidePanel not available' });
+    return false;
+  }
+});
+
 // ============ STARTUP ============
 
 chrome.runtime.onInstalled.addListener(function() {
@@ -316,4 +365,4 @@ chrome.runtime.onInstalled.addListener(function() {
 });
 
 connectWebSocket();
-console.log('[Argus] Background v2.3 loaded');
+console.log('[Argus] Background v2.4 loaded');

@@ -2,6 +2,28 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.4.0] - 2026-02-06
+
+### Added
+- **AI Chat Sidebar** - Side panel for conversational AI assistant with full event context
+  - `sidepanel.html` / `sidepanel.js` - Dark-themed chat UI with markdown rendering
+  - `/api/chat` endpoint - Context-aware Gemini conversations
+  - `chatWithContext()` in gemini.ts - Fetches recent events for grounded answers
+  - Quick action buttons (upcoming events, overdue check, summary)
+- **SidePanel Chrome API** - `chrome.sidePanel.setPanelBehavior()` + `OPEN_SIDE_PANEL` message handler in background.js
+- **Action Detection Pipeline** - `detectAction()` for NLP-based actions (mark done, cancel, reschedule) before event extraction
+
+### Fixed
+- **CRITICAL: Service Worker Crash** - Removed `"type": "module"` from manifest.json background config; background.js uses classic scripts, not ES modules (caused line 49 crash)
+- **EventStatusEnum Mismatch** - Added `'snoozed'` and `'ignored'` to Zod schema in types.ts (were used by db.ts but missing from validation)
+- **Shadowed Variable** - Renamed duplicate `searchText` to `travelSearchText` in ingestion.ts `processMessage()` to avoid variable shadowing
+- **Snooze Missing Body** - sidepanel.js snooze action now sends proper JSON body (`{ minutes: 30 }`) with `Content-Type: application/json` header
+- **SidePanel Not Opening** - Added `chrome.sidePanel.open()` handler and `setPanelBehavior` initialization in background.js
+
+### Changed
+- **background.js v2.4** - Version bump, sidePanel integration
+- **CRITICAL DATE/TIME RULE** - Gemini prompt now explicitly forbids fabricated dates; must use only dates from message text or current timestamp
+
 ## [2.3.2] - 2026-02-05
 
 ### Fixed

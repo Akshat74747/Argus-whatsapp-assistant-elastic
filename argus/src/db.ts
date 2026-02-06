@@ -32,6 +32,7 @@ export function initDb(dbPath: string): Database.Database {
     const hasReminderTime = tableInfo.some(col => col.name === 'reminder_time');
     const hasContextUrl = tableInfo.some(col => col.name === 'context_url');
     const hasDismissCount = tableInfo.some(col => col.name === 'dismiss_count');
+    const hasSenderName = tableInfo.some(col => col.name === 'sender_name');
     
     if (tableInfo.length > 0) { // Table exists
       if (!hasReminderTime) {
@@ -45,6 +46,10 @@ export function initDb(dbPath: string): Database.Database {
       if (!hasDismissCount) {
         console.log('⚙️  Adding dismiss_count column to events table...');
         db.exec('ALTER TABLE events ADD COLUMN dismiss_count INTEGER DEFAULT 0');
+      }
+      if (!hasSenderName) {
+        console.log('⚙️  Adding sender_name column to events table...');
+        db.exec('ALTER TABLE events ADD COLUMN sender_name TEXT');
       }
     }
   } catch (err) {
@@ -82,6 +87,7 @@ export function initDb(dbPath: string): Database.Database {
       reminder_time INTEGER,
       context_url TEXT,
       dismiss_count INTEGER DEFAULT 0,
+      sender_name TEXT,
       created_at INTEGER DEFAULT (strftime('%s', 'now')),
       FOREIGN KEY (message_id) REFERENCES messages(id)
     );
@@ -197,8 +203,8 @@ export function getMessageById(id: string): Message | undefined {
 // ============ Event Operations ============
 export function insertEvent(event: Omit<Event, 'id' | 'created_at'>): number {
   const stmt = getDb().prepare(`
-    INSERT INTO events (message_id, event_type, title, description, event_time, location, participants, keywords, confidence, status, context_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO events (message_id, event_type, title, description, event_time, location, participants, keywords, confidence, status, context_url, sender_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     event.message_id,
@@ -211,7 +217,8 @@ export function insertEvent(event: Omit<Event, 'id' | 'created_at'>): number {
     event.keywords,
     event.confidence,
     event.status || 'pending',
-    event.context_url || null
+    event.context_url || null,
+    event.sender_name || null
   );
   return result.lastInsertRowid as number;
 }
@@ -468,6 +475,49 @@ export function findPendingEventsByKeywords(keywords: string[]): Event[] {
   `);
   
   return stmt.all(...params) as Event[];
+}
+
+// Find active events by keywords (for action commands - searches all non-completed/expired statuses)
+export function findActiveEventsByKeywords(keywords: string[]): Event[] {
+  if (keywords.length === 0) return [];
+  
+  // Build search across title, keywords, description, location
+  const conditions = keywords.map(() => 
+    `(LOWER(keywords) LIKE ? OR LOWER(title) LIKE ? OR LOWER(COALESCE(description,'')) LIKE ? OR LOWER(COALESCE(location,'')) LIKE ?)`
+  ).join(' OR ');
+  const params = keywords.flatMap(kw => {
+    const lk = `%${kw.toLowerCase()}%`;
+    return [lk, lk, lk, lk];
+  });
+  
+  const stmt = getDb().prepare(`
+    SELECT * FROM events
+    WHERE status NOT IN ('completed', 'expired', 'ignored') AND (${conditions})
+    ORDER BY created_at DESC
+    LIMIT 10
+  `);
+  
+  return stmt.all(...params) as Event[];
+}
+
+// Get all active events (for Gemini action matching context)
+export function getActiveEvents(limit = 20): Event[] {
+  const stmt = getDb().prepare(`
+    SELECT * FROM events
+    WHERE status NOT IN ('completed', 'expired', 'ignored')
+    ORDER BY created_at DESC
+    LIMIT ?
+  `);
+  return stmt.all(limit) as Event[];
+}
+
+// Update event time (for reschedule actions)
+export function updateEventTime(eventId: number, newTime: number): void {
+  const stmt = getDb().prepare(`
+    UPDATE events SET event_time = ? WHERE id = ?
+  `);
+  stmt.run(newTime, eventId);
+  console.log(`📝 [DB] Event ${eventId} time updated to ${new Date(newTime * 1000).toISOString()}`);
 }
 
 export function deleteEvent(id: number): void {

@@ -348,65 +348,129 @@
   const shownEventIds = new Set();
 
   // ============ MODAL CONFIGURATION ============
-  const MODAL_CONFIGS = {
-    event_discovery: {
-      icon: '📅',
-      headerClass: 'discovery',
-      title: 'New Event Detected!',
-      subtitle: 'From your WhatsApp messages',
-      question: 'Would you like to set a reminder for this event?',
-      buttons: [
-        { text: '⏰ Set Reminder', action: 'set-reminder', style: 'primary' },
-        { text: 'Not Now', action: 'dismiss', style: 'secondary' },
-        { text: '🗑️ Delete', action: 'delete', style: 'outline' },
-      ]
-    },
-    event_reminder: {
-      icon: '⏰',
-      headerClass: 'reminder',
-      title: 'Event Starting Soon!',
-      subtitle: 'This is your scheduled reminder',
-      question: null,
-      buttons: [
-        { text: '✓ Got It', action: 'acknowledge', style: 'primary' },
-        { text: '✅ Mark Done', action: 'done', style: 'success' },
-      ]
-    },
-    context_reminder: {
-      icon: '🎯',
-      headerClass: 'context',
-      title: 'Remember This?',
-      subtitle: 'You mentioned wanting to do this',
-      question: 'Would you like to take action now?',
-      buttons: [
-        { text: '✅ Done', action: 'done', style: 'success' },
-        { text: 'Later', action: 'dismiss-temp', style: 'secondary' },
-        { text: "Don't Show Again", action: 'dismiss-permanent', style: 'outline' },
-      ]
-    },
-    conflict_warning: {
-      icon: '⚠️',
-      headerClass: 'conflict',
-      title: 'Schedule Conflict!',
-      subtitle: 'You may have overlapping commitments',
-      question: null,
-      buttons: [
-        { text: 'View Details', action: 'view', style: 'primary' },
-        { text: 'Ignore', action: 'dismiss', style: 'secondary' },
-      ]
-    },
-    insight_card: {
-      icon: '💡',
-      headerClass: 'insight',
-      title: 'Suggestion',
-      subtitle: 'Based on your conversations',
-      question: null,
-      buttons: [
-        { text: 'Thanks!', action: 'acknowledge', style: 'primary' },
-        { text: 'Not Relevant', action: 'dismiss', style: 'secondary' },
-      ]
+  // Dynamic - uses event data to build human-readable messages
+  function getModalConfig(popupType, event, extraData) {
+    const sender = event.sender_name || 'Someone';
+    const eventType = event.event_type || 'other';
+
+    switch (popupType) {
+      case 'event_discovery':
+        return {
+          icon: eventType === 'recommendation' ? '💡' : eventType === 'subscription' ? '💳' : eventType === 'meeting' ? '📅' : eventType === 'task' ? '📝' : '📅',
+          headerClass: eventType === 'recommendation' ? 'insight' : 'discovery',
+          title: eventType === 'recommendation' ? 'Remember This?' :
+                 eventType === 'subscription' ? 'Subscription Alert!' :
+                 eventType === 'meeting' ? 'New Event Detected!' :
+                 'New Event Detected!',
+          subtitle: sender !== 'Someone' ? 'From your chat with ' + sender : 'From your WhatsApp messages',
+          question: eventType === 'recommendation' ? 'Want to save this for later?' :
+                    eventType === 'subscription' ? 'Want to set a reminder for this?' :
+                    'Would you like to set a reminder?',
+          buttons: [
+            { text: '⏰ Set Reminder', action: 'set-reminder', style: 'primary' },
+            { text: '💤 Later', action: 'snooze', style: 'secondary' },
+            { text: '🚫 Not Interested', action: 'ignore', style: 'outline' },
+          ]
+        };
+
+      case 'event_reminder':
+        return {
+          icon: '⏰',
+          headerClass: 'reminder',
+          title: 'Event Starting Soon!',
+          subtitle: sender !== 'Someone' ? sender + ' mentioned this' : 'This is your scheduled reminder',
+          question: null,
+          buttons: [
+            { text: '✓ Got It', action: 'acknowledge', style: 'primary' },
+            { text: '✅ Mark Done', action: 'done', style: 'success' },
+            { text: '💤 Snooze 30min', action: 'snooze', style: 'secondary' },
+          ]
+        };
+
+      case 'context_reminder':
+        // Build smart message based on event type
+        let contextTitle = 'Remember This?';
+        let contextSubtitle = 'From your messages';
+        let contextQuestion = 'Would you like to take action now?';
+        let contextButtons = [
+          { text: '✅ Done', action: 'done', style: 'success' },
+          { text: '💤 Not Now', action: 'dismiss-temp', style: 'secondary' },
+          { text: "🚫 Never Show", action: 'dismiss-permanent', style: 'outline' },
+        ];
+
+        if (eventType === 'subscription') {
+          contextTitle = '💳 Subscription Alert!';
+          contextSubtitle = 'You planned to take action on this';
+          contextQuestion = 'You\'re on this site right now. Want to take action?';
+          contextButtons = [
+            { text: '✅ Already Done', action: 'done', style: 'success' },
+            { text: '💤 Remind Later', action: 'dismiss-temp', style: 'secondary' },
+            { text: "🚫 Cancel Reminder", action: 'dismiss-permanent', style: 'outline' },
+          ];
+        } else if (eventType === 'recommendation' || eventType === 'travel') {
+          contextTitle = '💡 ' + (sender !== 'Someone' ? sender + '\'s Recommendation' : 'Recommendation');
+          contextSubtitle = sender !== 'Someone' ? 'From your chat with ' + sender : 'From your conversations';
+          contextQuestion = 'You\'re browsing related content right now!';
+          contextButtons = [
+            { text: '📍 Save Location', action: 'done', style: 'success' },
+            { text: '💤 Not Now', action: 'dismiss-temp', style: 'secondary' },
+            { text: "🚫 Not Interested", action: 'dismiss-permanent', style: 'outline' },
+          ];
+        }
+
+        return {
+          icon: eventType === 'subscription' ? '💳' : eventType === 'recommendation' ? '💡' : '🎯',
+          headerClass: 'context',
+          title: contextTitle,
+          subtitle: contextSubtitle,
+          question: contextQuestion,
+          buttons: contextButtons,
+        };
+
+      case 'conflict_warning': {
+        const conflictNames = (extraData.conflictingEvents || []).map(function(e) { return e.title; }).join(', ');
+        return {
+          icon: '⚠️',
+          headerClass: 'conflict',
+          title: 'Schedule Conflict!',
+          subtitle: sender !== 'Someone' ? sender + ' mentioned this commitment' : 'You have overlapping commitments',
+          question: conflictNames ? 'This conflicts with: ' + conflictNames + '. Want to reschedule?' : 'You may have overlapping commitments',
+          buttons: [
+            { text: '📅 Keep Both', action: 'acknowledge', style: 'primary' },
+            { text: '💤 Decide Later', action: 'snooze', style: 'secondary' },
+            { text: '🚫 Skip New One', action: 'ignore', style: 'outline' },
+          ]
+        };
+      }
+
+      case 'insight_card':
+        return {
+          icon: '💡',
+          headerClass: 'insight',
+          title: sender !== 'Someone' ? sender + '\'s Suggestion' : 'Suggestion',
+          subtitle: 'Based on your conversations',
+          question: null,
+          buttons: [
+            { text: '👍 Thanks!', action: 'acknowledge', style: 'primary' },
+            { text: '🚫 Not Relevant', action: 'dismiss', style: 'secondary' },
+          ]
+        };
+
+      default:
+        return {
+          icon: '📅',
+          headerClass: 'discovery',
+          title: 'New Event Detected!',
+          subtitle: 'From your WhatsApp messages',
+          question: 'Would you like to set a reminder?',
+          buttons: [
+            { text: '⏰ Set Reminder', action: 'set-reminder', style: 'primary' },
+            { text: '💤 Later', action: 'snooze', style: 'secondary' },
+            { text: '🚫 Not Interested', action: 'ignore', style: 'outline' },
+          ]
+        };
     }
-  };
+  }
 
   // ============ INITIALIZATION ============
   function injectStyles() {
@@ -457,7 +521,7 @@
       shownEventIds.add(event.id);
     }
 
-    const config = MODAL_CONFIGS[popupType] || MODAL_CONFIGS.event_discovery;
+    const config = getModalConfig(popupType, event, extraData);
 
     // Create backdrop
     const backdrop = document.createElement('div');
@@ -492,7 +556,12 @@
     html += '<div class="argus-event-title">' + escapeHtml(event.title || 'Untitled Event') + '</div>';
     
     if (event.description) {
-      html += '<div class="argus-event-desc">' + escapeHtml(event.description) + '</div>';
+      // Build smart description with sender attribution
+      let desc = event.description;
+      if (event.sender_name && !desc.toLowerCase().includes(event.sender_name.toLowerCase())) {
+        desc = event.sender_name + ' mentioned: ' + desc;
+      }
+      html += '<div class="argus-event-desc">' + escapeHtml(desc) + '</div>';
     }
 
     // Meta info
@@ -753,6 +822,17 @@
       case 'ARGUS_INSIGHT':
         console.log(`[Argus] 💡 Insight card: "${message.event?.title}"`);
         showModal(message.event, 'insight_card');
+        sendResponse({ received: true });
+        break;
+
+      case 'ARGUS_ACTION_TOAST':
+        console.log(`[Argus] 🎯 Action toast: "${message.action}" on "${message.eventTitle}"`);
+        const actionEmoji = message.action === 'cancel' || message.action === 'delete' ? '🗑️' :
+                           message.action === 'complete' ? '✅' :
+                           message.action === 'ignore' ? '🚫' :
+                           message.action === 'snooze' || message.action === 'postpone' ? '💤' :
+                           message.action === 'modify' ? '📅' : '✓';
+        showToast(actionEmoji + ' ' + message.action.charAt(0).toUpperCase() + message.action.slice(1), message.message || message.eventTitle);
         sendResponse({ received: true });
         break;
 

@@ -22,7 +22,7 @@ export type EventType = z.infer<typeof EventTypeEnum>;
 // - completed: User marked as done
 // - dismissed: User dismissed (for context events, can reappear)
 // - expired: Event time has passed
-export const EventStatusEnum = z.enum(['discovered', 'scheduled', 'reminded', 'completed', 'dismissed', 'expired', 'pending']);
+export const EventStatusEnum = z.enum(['discovered', 'scheduled', 'snoozed', 'ignored', 'reminded', 'completed', 'dismissed', 'expired', 'pending']);
 export type EventStatus = z.infer<typeof EventStatusEnum>;
 
 export const EventSchema = z.object({
@@ -40,6 +40,7 @@ export const EventSchema = z.object({
   reminder_time: z.number().nullable().optional(), // Unix timestamp for when to remind
   context_url: z.string().nullable().optional(), // URL pattern that triggers this event (e.g., netflix.com)
   dismiss_count: z.number().default(0).optional(), // How many times dismissed (for persistent reminders)
+  sender_name: z.string().nullable().optional(), // Who sent the original message (e.g., "Rahul")
   created_at: z.number().optional(),
 });
 export type Event = z.infer<typeof EventSchema>;
