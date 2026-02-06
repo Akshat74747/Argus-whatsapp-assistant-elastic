@@ -2,6 +2,63 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.6.0] - 2026-02-06
+
+### Architecture — "Let Gemini Do Everything"
+
+Two major architectural changes that remove brittle human-coded logic and let Gemini AI handle classification, extraction, AND popup generation in a single intelligent pipeline.
+
+### Removed
+- **`classifyMessage()` heuristic eliminated** — The 70+ line regex-based keyword classifier (`eventKeywords`, `timePatterns`, `intentPatterns`, `highValueKeywords`, `actionPatterns`, `noisePatterns`) has been completely removed
+  - Was the source of false positives AND false negatives — keywords like "complete", "will", "send" matched casual chat; meanwhile legitimate events without time references were silently dropped
+  - Replaced by `shouldSkipMessage()` — a trivial 15-line pre-filter that only skips provably empty/noise messages (pure emoji, "ok", "lol", single-word acks, <3 chars)
+  - Everything else goes straight to Gemini — no more brittle keyword gates
+- **`generateNotificationMessage()` removed** — Was never actually called anywhere (dead code since v2.0). Superseded by `generatePopupBlueprint()`
+- **Old two-step classify→extract pipeline removed** — `classifyMessage()` + `extractEvents()` as separate calls is gone
+
+### Added
+- **`analyzeMessage()` — Unified Gemini Analysis** (`gemini.ts`)
+  - Single Gemini call replaces both `classifyMessage()` AND `extractEvents()`
+  - Gemini decides if a message has events AND extracts them in one shot
+  - Full SYSTEM_PROMPT, noise filter, spam filter, and extraction rules all inline
+  - `extractEvents` kept as backward-compatible alias for batch import
+
+- **`shouldSkipMessage()` — Trivial Pre-filter** (`gemini.ts`)
+  - Synchronous, zero API cost — just prevents wasting Gemini calls on "ok", "👍", "lol"
+  - NOT a classifier — it's a garbage filter. If in doubt, it lets the message through to Gemini
+
+- **`generatePopupBlueprint()` — AI-Driven Popup Spec** (`gemini.ts`)
+  - Gemini generates the COMPLETE popup specification: icon, headerClass, title, subtitle, body, question, and buttons (with text, action, style for each)
+  - Server attaches popup blueprint to every WebSocket broadcast
+  - Chrome extension renders whatever the API says — no hardcoded popup templates
+  - `PopupBlueprint` and `PopupButton` interfaces exported for type safety
+  - Fallback: `getDefaultPopupBlueprint()` generates sensible defaults if Gemini fails
+
+- **API-Driven Popup Rendering** (`content.js`)
+  - `showModal()` now checks `extraData.popup` first — if server sent a blueprint, use it directly
+  - `getModalConfig()` kept as fallback for backward compatibility (old events without blueprints)
+  - Extension is now a pure renderer — adding new popup types requires ZERO extension code changes
+
+### Changed
+- **`ingestion.ts`**: `classifyMessage` import removed → `shouldSkipMessage` imported instead. Two-step classify→extract replaced with trivial pre-filter → single `analyzeMessage()` call
+- **`server.ts`**: Every `broadcast()` call now attaches a `popup` field with Gemini-generated blueprint. Webhook handler, scheduler callback, and context-check all call `generatePopupBlueprint()` before broadcasting
+- **`background.js`**: `handleWebSocketMessage()` passes `data.popup` through to all content.js messages
+- **`content.js`**: All message listeners pass `message.popup` to `showModal()` via extraData. Version bumped to v2.6
+- **`scheduler.ts`**: `NotifyCallback` type updated to `void | Promise<void>` (scheduler callback is now async for popup generation)
+- **Flowchart**: Rewritten to show unified `analyzeMessage()` + `generatePopupBlueprint()` flow. `classifyMessage` and `extractEvents` nodes replaced. Shows popup blueprint path through AI → WS → Extension
+
+### Why This Matters
+- **Extensibility**: Want a new popup type? Just describe it in the Gemini prompt. Zero code changes in the extension.
+- **Accuracy**: Gemini understands "bro try cashews at Zantyes in Goa" as a recommendation — no keyword list ever will.
+- **Fewer API calls**: One Gemini call per message instead of two (classify + extract were separate).
+- **Dynamic buttons**: Server can return 2, 3, or 5 buttons with any labels/actions — extension just renders them.
+- **Dead code cleanup**: `generateNotificationMessage()` was defined but never wired in since v2.0.
+
+### Verified Scenarios
+- **#1 Goa Cashew**: "Bro try cashews at Zantyes in Goa" → `shouldSkipMessage()` passes → `analyzeMessage()` extracts recommendation → `generatePopupBlueprint()` creates popup with 📍 Save Location button ✅
+- **#4 Netflix Cancel**: "I need to cancel Netflix" → `shouldSkipMessage()` passes → `analyzeMessage()` extracts subscription task → context_url=netflix → context-check generates popup with ✅ Already Done button ✅
+- **#5 Calendar Conflict**: "Dinner Thursday at 8" → `analyzeMessage()` extracts meeting → conflict detected → `generatePopupBlueprint()` creates popup with 📅 View My Day button ✅
+
 ## [2.5.1] - 2026-02-06
 
 ### Fixed

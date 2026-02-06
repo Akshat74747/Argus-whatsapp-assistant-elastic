@@ -1,5 +1,5 @@
 import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEventTime, findDuplicateEvent } from './db.js';
-import { extractEvents, classifyMessage, detectAction } from './gemini.js';
+import { extractEvents, shouldSkipMessage, detectAction } from './gemini.js';
 import type { Message, WhatsAppWebhook, TriggerType } from './types.js';
 
 interface ConflictInfo {
@@ -92,10 +92,10 @@ export async function processWebhook(
     message_count: 1,
   });
 
-  // Quick classification
-  const classification = await classifyMessage(content);
-  if (!classification.hasEvent) {
-    return { messageId: message.id, eventsCreated: 0, triggersCreated: 0, skipped: true, skipReason: 'no_event_detected' };
+  // Trivial pre-filter — skip pure noise (empty, emoji, "ok", "lol", etc.)
+  // Everything else goes to Gemini — no more brittle keyword heuristics
+  if (shouldSkipMessage(content)) {
+    return { messageId: message.id, eventsCreated: 0, triggersCreated: 0, skipped: true, skipReason: 'trivial_message' };
   }
 
   // Get context from recent messages
@@ -424,8 +424,8 @@ export async function batchImportMessages(
 
     insertMessage(message);
 
-    const classification = await classifyMessage(msg.content);
-    if (classification.hasEvent) {
+    // Trivial pre-filter only — Gemini decides the rest
+    if (!shouldSkipMessage(msg.content)) {
       const result = await processMessage(message);
       totalEvents += result.eventsCreated;
       processed++;

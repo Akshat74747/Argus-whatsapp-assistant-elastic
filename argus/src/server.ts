@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent, getEventsForDay } from './db.js';
-import { initGemini, chatWithContext } from './gemini.js';
+import { initGemini, chatWithContext, generatePopupBlueprint } from './gemini.js';
 import { processWebhook } from './ingestion.js';
 import { matchContext, extractContextFromUrl } from './matcher.js';
 import { startScheduler, stopScheduler, checkContextTriggers } from './scheduler.js';
@@ -105,14 +105,23 @@ function broadcast(data: object): void {
   }
 }
 
-// Start scheduler - broadcasts reminders/triggers
-startScheduler((event) => {
-  // Scheduler sends different popup types - forward them correctly
-  const type = event.popupType === 'event_reminder' ? 'trigger' : 
-               event.popupType === 'snooze_reminder' ? 'notification' :
-               event.popupType === 'context_reminder' ? 'context_reminder' :
+// Start scheduler - broadcasts reminders/triggers with Gemini-generated popup blueprints
+startScheduler(async (event) => {
+  const popupType = event.popupType || 'event_reminder';
+  const type = popupType === 'event_reminder' ? 'trigger' : 
+               popupType === 'snooze_reminder' ? 'notification' :
+               popupType === 'context_reminder' ? 'context_reminder' :
                'notification';
-  broadcast({ type, event, popupType: event.popupType });
+  
+  // Generate popup blueprint via Gemini — extension just renders whatever we send
+  let popup;
+  try {
+    popup = await generatePopupBlueprint(event, {}, popupType);
+  } catch (err) {
+    console.error('⚠️ Popup blueprint generation failed (scheduler), using server defaults:', err);
+  }
+  
+  broadcast({ type, event, popupType, popup });
 });
 
 // ============ API Routes ============
@@ -476,25 +485,38 @@ app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
 
     // ============ Handle NEW events ============
     // Broadcast each event to WebSocket clients for overlay notifications
+    // Generate popup blueprint via Gemini — extension just renders whatever we send
     if (result.eventsCreated > 0 && result.events) {
       console.log(`✨ [WEBHOOK] Created ${result.eventsCreated} event(s) from message`);
       for (const event of result.events) {
         console.log(`   └─ Event #${event.id}: "${event.title}" (type: ${event.event_type}, status: discovered, context_url: ${event.context_url || 'none'}, sender: ${event.sender_name || 'unknown'})`);
         
-        // Send ONE notification per event - include conflict info if present
         const hasConflicts = event.conflicts && event.conflicts.length > 0;
+        const popupType = hasConflicts ? 'conflict_warning' : 'event_discovery';
+        
+        // Generate popup blueprint via Gemini
+        let popup;
+        try {
+          popup = await generatePopupBlueprint(
+            event,
+            { conflictingEvents: event.conflicts },
+            popupType
+          );
+        } catch (err) {
+          console.error('⚠️ Popup blueprint generation failed (webhook), using defaults:', err);
+        }
+        
         if (hasConflicts) {
-          // If conflicts, send as conflict_warning (which includes the event)
           broadcast({ 
             type: 'conflict_warning', 
             event,
             conflictingEvents: event.conflicts,
-            popupType: 'conflict_warning'
+            popupType,
+            popup
           });
           console.log(`📡 [WEBHOOK] Broadcasted CONFLICT warning for event #${event.id} (conflicts with ${event.conflicts!.length} events)`);
         } else {
-          // No conflicts, send as regular notification
-          broadcast({ type: 'notification', event });
+          broadcast({ type: 'notification', event, popup });
           console.log(`📡 [WEBHOOK] Broadcasted discovery notification for event #${event.id}`);
         }
       }
@@ -527,13 +549,25 @@ app.post('/api/context-check', async (req: Request, res: Response) => {
     }
     
     if (contextTriggers.length > 0) {
-      // Broadcast context reminders to all clients
+      // Broadcast context reminders to all clients with Gemini popup blueprints
       for (const trigger of contextTriggers) {
+        let popup;
+        try {
+          popup = await generatePopupBlueprint(
+            trigger,
+            { url: parsed.data.url, pageTitle: parsed.data.title },
+            'context_reminder'
+          );
+        } catch (err) {
+          console.error('⚠️ Popup blueprint generation failed (context), using defaults:', err);
+        }
+        
         broadcast({ 
           type: 'context_reminder', 
           event: trigger,
           popupType: 'context_reminder',
-          url: parsed.data.url
+          url: parsed.data.url,
+          popup
         });
       }
     }

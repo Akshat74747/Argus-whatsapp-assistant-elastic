@@ -534,7 +534,9 @@
       shownEventIds.add(event.id);
     }
 
-    const config = getModalConfig(popupType, event, extraData);
+    // Use API popup blueprint if available, otherwise fall back to local config
+    // v2.6.0: Server sends complete popup spec via Gemini — extension just renders
+    const config = extraData.popup || getModalConfig(popupType, event, extraData);
 
     // Create backdrop
     const backdrop = document.createElement('div');
@@ -883,31 +885,31 @@
     switch (message.type) {
       case 'ARGUS_NEW_EVENT':
         console.log(`[Argus] 📅 New event discovered: "${message.event?.title}" (id: ${message.event?.id})`);
-        showModal(message.event, 'event_discovery');
+        showModal(message.event, 'event_discovery', { popup: message.popup });
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_REMINDER':
         console.log(`[Argus] ⏰ Time-based reminder: "${message.event?.title || message.message}" (id: ${message.event?.id})`);
-        showModal(message.event || { title: message.message }, 'event_reminder');
+        showModal(message.event || { title: message.message }, 'event_reminder', { popup: message.popup });
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_CONTEXT_REMINDER':
         console.log(`[Argus] 🌐 Context reminder: "${message.event?.title}" (id: ${message.event?.id}) for URL: ${message.url}`);
-        showModal(message.event, 'context_reminder', { url: message.url });
+        showModal(message.event, 'context_reminder', { url: message.url, popup: message.popup });
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_CONFLICT':
         console.log(`[Argus] ⚠️ Conflict warning: "${message.event?.title}" conflicts with ${message.conflictingEvents?.length} event(s)`);
-        showModal(message.event, 'conflict_warning', { conflictingEvents: message.conflictingEvents });
+        showModal(message.event, 'conflict_warning', { conflictingEvents: message.conflictingEvents, popup: message.popup });
         sendResponse({ received: true });
         break;
 
       case 'ARGUS_INSIGHT':
         console.log(`[Argus] 💡 Insight card: "${message.event?.title}"`);
-        showModal(message.event, 'insight_card');
+        showModal(message.event, 'insight_card', { popup: message.popup });
         sendResponse({ received: true });
         break;
 
@@ -930,5 +932,5 @@
     return true;
   });
 
-  console.log('[Argus] Content Script v2.2 loaded');
+  console.log('[Argus] Content Script v2.6 loaded — API-driven popups');
 })();

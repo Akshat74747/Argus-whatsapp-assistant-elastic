@@ -19,9 +19,9 @@ flowchart TB
         subgraph INGEST ["📥 Ingestion Pipeline"]
             direction TB
             WH["Webhook Receiver\n/api/webhook/whatsapp"]
-            CLASSIFY["classifyMessage()\nStrict Keyword + Noise Filter"]
+            PREFILTER["shouldSkipMessage()\nTrivial Pre-filter\nempty · emoji · 'ok' · 'lol'"]
             DETECT["detectAction()\nCancel / Done / Snooze / Ignore"]
-            EXTRACT["extractEvents()\nGemini Extraction + Spam & Noise Filter"]
+            ANALYZE["analyzeMessage()\nSingle Gemini Call\nClassify + Extract Unified"]
             DEDUP["findDuplicateEvent()\n48h Title Similarity Check"]
             CONF_GATE["Confidence Gate\nthreshold ≥ 0.65"]
             CONFLICT["checkEventConflicts()\n60min Window"]
@@ -32,7 +32,7 @@ flowchart TB
         subgraph AI ["🤖 Gemini AI Engine"]
             direction TB
             GEMINI["Gemini 3 Flash Preview\n+ System Prompt"]
-            GEN_NOTIF["generateNotificationMessage()"]
+            GEN_POPUP["generatePopupBlueprint()\nFull Popup Spec via AI\nicon · title · buttons · styles"]
             VALIDATE["validateRelevance()\nURL ↔ Event Matching"]
             AI_CHAT["chatWithContext()\nNatural Language Q&A"]
         end
@@ -78,10 +78,10 @@ flowchart TB
             BG_JS <--> WS_CLI
         end
 
-        subgraph CS ["Content Script"]
+        subgraph CS ["Content Script — Pure Renderer"]
             direction TB
             CS_JS["content.js"]
-            POPUP["Dynamic Popup Manager\nDiscovery · Reminder · Context · Conflict"]
+            POPUP["API-Driven Popup\nRenders blueprint from server\nNo hardcoded templates"]
             TOAST["Toast Notifications"]
             DAY_VIEW["View My Day\nColor-coded Timeline"]
         end
@@ -110,38 +110,41 @@ flowchart TB
     %% ============ INGESTION FLOW ============
     WA -->|"messages"| EVOL_SVC
     EVOL_SVC -->|"webhook POST"| WH
-    WH --> CLASSIFY
-    CLASSIFY -->|"❌ noise / no signal"| SKIP_MSG["⏭️ Skip"]
-    CLASSIFY -->|"✅ has action"| DETECT
-    CLASSIFY -->|"✅ has event signal"| EXTRACT
+    WH --> PREFILTER
+    PREFILTER -->|"❌ trivial message"| SKIP_MSG["⏭️ Skip"]
+    PREFILTER -->|"✅ non-trivial"| DETECT
     DETECT -->|"action found"| ACTION_EXEC["Execute on DB\ndelete · complete · snooze"]
-    DETECT -->|"no action"| EXTRACT
-    EXTRACT -->|"AI call"| GEMINI
-    EXTRACT --> CONF_GATE
+    DETECT -->|"no action"| ANALYZE
+    ANALYZE -->|"AI call"| GEMINI
+    ANALYZE --> CONF_GATE
     CONF_GATE -->|"< 0.65 → reject"| SKIP_LOW["⏭️ Low Confidence"]
     CONF_GATE -->|"≥ 0.65 → check dedup"| DEDUP
     DEDUP -->|"duplicate found → skip"| SKIP_DUP["⏭️ Duplicate"]
     DEDUP -->|"unique → save"| SAVE
     SAVE --> CONFLICT
-    CONFLICT -->|"overlap detected"| WS
+    CONFLICT -->|"overlap detected"| GEN_POPUP
     SAVE --> DB_OPS
+    SAVE -->|"new event"| GEN_POPUP
+
+    %% ============ POPUP BLUEPRINT FLOW ============
+    GEN_POPUP -->|"AI call"| GEMINI
+    GEN_POPUP -->|"popup blueprint\nicon · title · buttons · styles"| WS
 
     %% ============ AI ENGINE CONNECTIONS ============
     DETECT -->|"AI call"| GEMINI
     AI_CHAT -->|"AI call"| GEMINI
     VALIDATE -->|"AI call"| GEMINI
-    GEN_NOTIF -->|"AI call"| GEMINI
     VALIDATE --> DB_OPS
 
     %% ============ SCHEDULER → DATA → WS ============
     TIME_CHK --> DB_OPS
     REM_CHK --> DB_OPS
     SNOOZE_CHK --> DB_OPS
-    SCHED -->|"broadcast events"| WS
+    SCHED -->|"event due"| GEN_POPUP
 
     %% ============ WS ↔ EXTENSION ============
     WS_CLI <-->|"WebSocket :3000/ws"| WS
-    WS_CLI -->|"popup data"| CS_JS
+    WS_CLI -->|"popup blueprint"| CS_JS
     WS_CLI -->|"notifications"| BG_JS
 
     %% ============ EXTENSION → API ============
@@ -157,7 +160,7 @@ flowchart TB
     CHROME -->|"URL changes"| BG_JS
     BG_JS -->|"POST /api/context-check"| EP_CTX
     EP_CTX -->|"validate"| VALIDATE
-    EP_CTX -->|"matching events"| BG_JS
+    EP_CTX -->|"matching events"| GEN_POPUP
     BG_JS -->|"context popup"| CS_JS
 
     %% ============ API → DATA ============

@@ -34,6 +34,128 @@ CRITICAL RULES:
 - Only extract events with CLEAR, SPECIFIC, ACTIONABLE intent (who/what/when/where)
 - Return valid JSON only`;
 
+// ============ UNIFIED MESSAGE ANALYSIS ============
+// Single Gemini call replaces old classifyMessage() + extractEvents() two-step flow.
+// Gemini handles ALL classification and extraction — no brittle keyword heuristics.
+
+export async function analyzeMessage(
+  message: string,
+  context: string[] = [],
+  currentDate: string = new Date().toISOString()
+): Promise<GeminiExtraction> {
+  const contextBlock = context.length > 0 
+    ? `\nPrevious messages in this chat (for context):\n${context.map((m, i) => `${i + 1}. "${m}"`).join('\n')}\n`
+    : '';
+
+  const prompt = `Analyze this WhatsApp message. First decide if it contains any real event/task/reminder. If yes, extract them. If no, return empty events array.
+Current date: ${currentDate}
+${contextBlock}
+Message to analyze:
+"${message}"
+
+Return JSON with this exact schema:
+{
+  "events": [
+    {
+      "type": "meeting" | "deadline" | "reminder" | "travel" | "task" | "subscription" | "recommendation" | "other",
+      "title": "short title",
+      "description": "full details or null",
+      "event_time": "ISO datetime or null",
+      "location": "place name (goa, mumbai) or service name (netflix, hotstar, amazon)",
+      "participants": ["names mentioned"],
+      "keywords": ["searchable", "keywords", "include place names and service names"],
+      "confidence": 0.0 to 1.0
+    }
+  ]
+}
+
+Rules:
+- Understand informal/broken English and Hinglish (Hindi+English mix)
+- Handle typos: "cancle" = "cancel", "tomoro" = "tomorrow", "goa" = "goa"
+- "kal" = tomorrow, "aaj" = today, "parso" = day after tomorrow
+- "this week" = within 7 days, use end of week as event_time
+- Extract times like "5pm", "shaam ko" (evening), "subah" (morning)
+
+CRITICAL DATE/TIME RULE:
+- ONLY set event_time if the message EXPLICITLY mentions a date, time, or relative time reference
+- "meeting tomorrow at 5pm" → event_time = tomorrow 5pm ✅
+- "cancel netflix this month" → event_time = end of this month ✅  
+- "kal 10 baje" → event_time = tomorrow 10am ✅
+- "You should try cashews from Zantye's in Goa" → event_time = null ❌ (NO date mentioned!)
+- "I need to cancel Amazon Prime" → event_time = null ❌ (NO specific date!)
+- "Rahul recommended this restaurant" → event_time = null ❌ (just a recommendation)
+- Do NOT fabricate or guess dates. If no time reference exists, event_time MUST be null.
+
+- For SUBSCRIPTIONS (Netflix, Hotstar, Amazon Prime, gym, domain, hosting):
+  - type = "subscription"
+  - location = JUST the service name (netflix, hotstar, amazon) - NOT full domain!
+  - keywords = include the service name
+  - title = action to take (Cancel Netflix, Renew Hotstar, etc)
+
+- For TRAVEL/RECOMMENDATIONS (trips, places, things to buy/do):
+  - type = "travel" or "recommendation"
+  - location = place name (goa, mumbai, delhi)
+  - keywords = include the place name and any products/shops mentioned
+  - Example: "Rahul recommended cashews at Zantye's in Goa" → type=recommendation, location=goa, keywords=[goa, cashews, zantyes, rahul]
+
+- For MEETINGS and INFORMAL COMMITMENTS:
+  - IMPORTANT: Questions like "Can we meet at 5pm?" or "Dinner Thursday?" ARE events!
+  - Informal commitments like "I'll be there Thursday" or "See you at dinner" ARE events
+  - "Let's do Thursday dinner" = meeting, event_time = this Thursday evening
+  - "Can we have a meeting on 15th at 10:30?" = meeting, extract the date/time
+  - Group chat commitments ("I'll join", "count me in", "I'm coming") = meeting events
+
+- Intent phrases like "want to", "need to", "have to", "should" indicate tasks
+- If no event/task found, return: {"events": []}
+- Keywords should include: location names, service names, product names, people names, group names
+- Confidence < 0.5 if uncertain
+
+SPAM/PROMOTION FILTER (VERY IMPORTANT):
+- Messages like "Get X at just ₹199" or "X Pro at 50% off" are PROMOTIONS, not user intent
+- Forwarded deal messages, brand/business account messages = promotional (confidence < 0.3)
+- "I want to get canva pro" = genuine intent (confidence 0.8+)
+- "Get Canva Pro at just ₹200" = promotional spam (confidence 0.2)
+- "Bro try the cashews at Zantyes" from a friend = genuine recommendation (confidence 0.9)
+- "Best cashews! Order now at 40% off!" = spam (confidence 0.1)
+- Price mentions like "at just 99", "only ₹199", "50% off" are strong spam signals
+- If uncertain whether genuine or spam, set confidence < 0.4
+
+NOISE FILTER — DO NOT EXTRACT these as events (return empty events array):
+- Developer/work chat about code: "Create problems 104 in PC", "fix the API", "push the code", "deploy to staging", "debug the issue", "check the endpoint", "play with APIs"
+- Vague "I will" statements without specific time/place: "I will start robotics man", "will do it", "I'll check", "I'll send", "will see"
+- Status updates / progress reports: "I can complete in 10%", "almost done", "working on it", "in progress", "done with the first part"
+- Past-tense completion reports: "got doc for everflow at 4am", "already sent it", "done bhai", "finished the report"
+- Casual work conversation: "share design", "review the spacing", "check after dev", "upgrade vibe coding game"
+- Meta-comments about tasks: "need to focus on this", "let me handle it", "I got this"
+- Generic social chat: "how are you", "what's up", "good morning", "haha", "lol", "ok", "nice"
+- Short ambiguous fragments: messages under 5 words without a clear event/task signal
+
+ONLY extract events that have CLEAR, SPECIFIC, ACTIONABLE intent:
+- ✅ "Cancel my Netflix subscription" — clear action + specific service
+- ✅ "Bro try cashews at Zantyes in Goa" — specific recommendation with place
+- ✅ "Meeting tomorrow at 5pm" — specific event with time
+- ✅ "Dinner Thursday at 8" — specific commitment with day/time
+- ✅ "Need to pay rent by 15th" — clear deadline
+- ❌ "I will start robotics man" — vague, no time, no specifics
+- ❌ "Complete restosmem broo" — dev chat / status update
+- ❌ "Send payment via UPI" — vague, no amount/to whom/when
+- ❌ "Create problems 104 in PC" — coding/dev task, not a life event
+- ❌ "Upgrade vibe coding game" — casual chat, not actionable
+- ❌ "Share design" — work chat, not a schedulable event`;
+
+  const response = await callGemini(prompt);
+  
+  try {
+    const parsed = JSON.parse(response);
+    return {
+      events: parsed.events || [],
+    };
+  } catch {
+    console.error('Failed to parse Gemini response:', response);
+    return { events: [] };
+  }
+}
+
 async function callGemini(prompt: string, jsonMode = true): Promise<string> {
   const cfg = getConfig();
   
@@ -141,174 +263,12 @@ If it's a new event/task/recommendation (NOT an action), return: {"isAction": fa
   }
 }
 
-// ============ SMART NOTIFICATION MESSAGE GENERATOR ============
-// Generates human-readable, scenario-specific popup messages
+// generateNotificationMessage() removed in v2.6.0 — replaced by generatePopupBlueprint()
+// which returns the COMPLETE popup spec (icon, buttons, styles) not just text
 
-export async function generateNotificationMessage(
-  event: { title: string; description?: string | null; event_type: string; location?: string | null; sender_name?: string | null; keywords?: string },
-  triggerContext: { url?: string; pageTitle?: string; conflictingEvents?: Array<{ title: string; event_time?: number | null }> },
-  popupType: string
-): Promise<{ title: string; subtitle: string; body: string; question: string }> {
-  const prompt = `Generate a SHORT, HUMAN-READABLE notification message for a proactive memory assistant called Argus.
-
-Event: "${event.title}"
-Description: "${event.description || ''}"
-Type: ${event.event_type}
-Location: ${event.location || 'none'}
-Original sender: ${event.sender_name || 'unknown'}
-Keywords: ${event.keywords || ''}
-Popup type: ${popupType}
-Current URL: ${triggerContext.url || 'none'}
-Page title: ${triggerContext.pageTitle || 'none'}
-${triggerContext.conflictingEvents ? `Conflicting events: ${triggerContext.conflictingEvents.map(e => `"${e.title}"`).join(', ')}` : ''}
-
-Return JSON:
-{
-  "title": "short header (max 6 words)",
-  "subtitle": "one-line context (who mentioned, when)",
-  "body": "the main message to show user - natural, conversational, specific. Include sender name if known. Max 2 sentences.",
-  "question": "what should user do? (1 sentence question)"
-}
-
-EXAMPLES:
-- Recommendation: {"title": "Remember This?", "subtitle": "From your chat with Rahul", "body": "Rahul recommended cashews at Zantye's shop in Goa. You're browsing travel sites right now!", "question": "Want to save the location for your trip?"}
-- Subscription: {"title": "Subscription Alert!", "subtitle": "From your notes", "body": "You planned to cancel Netflix after finishing that show. You're on Netflix right now.", "question": "Should we help you navigate to the cancellation page?"}
-- Conflict: {"title": "Schedule Conflict!", "subtitle": "From Dinner Group chat", "body": "You told the group you'd join Thursday dinner, but this new meeting overlaps.", "question": "Want to suggest Friday instead?"}
-
-Be SPECIFIC, use the actual names/places/services. Never be generic.`;
-
-  const response = await callGemini(prompt);
-
-  try {
-    return JSON.parse(response);
-  } catch {
-    return {
-      title: event.title,
-      subtitle: `From ${event.sender_name || 'your messages'}`,
-      body: event.description || event.title,
-      question: 'Would you like to take action?',
-    };
-  }
-}
-
-export async function extractEvents(
-  message: string,
-  context: string[] = [],
-  currentDate: string = new Date().toISOString()
-): Promise<GeminiExtraction> {
-  const contextBlock = context.length > 0 
-    ? `\nPrevious messages in this chat (for context):\n${context.map((m, i) => `${i + 1}. "${m}"`).join('\n')}\n`
-    : '';
-
-  const prompt = `Extract events/tasks/reminders from this WhatsApp message. Return JSON only.
-Current date: ${currentDate}
-${contextBlock}
-Message to analyze:
-"${message}"
-
-Return JSON with this exact schema:
-{
-  "events": [
-    {
-      "type": "meeting" | "deadline" | "reminder" | "travel" | "task" | "subscription" | "recommendation" | "other",
-      "title": "short title",
-      "description": "full details or null",
-      "event_time": "ISO datetime or null",
-      "location": "place name (goa, mumbai) or service name (netflix, hotstar, amazon)",
-      "participants": ["names mentioned"],
-      "keywords": ["searchable", "keywords", "include place names and service names"],
-      "confidence": 0.0 to 1.0
-    }
-  ]
-}
-
-Rules:
-- Understand informal/broken English and Hinglish (Hindi+English mix)
-- Handle typos: "cancle" = "cancel", "tomoro" = "tomorrow", "goa" = "goa"
-- "kal" = tomorrow, "aaj" = today, "parso" = day after tomorrow
-- "this week" = within 7 days, use end of week as event_time
-- Extract times like "5pm", "shaam ko" (evening), "subah" (morning)
-
-CRITICAL DATE/TIME RULE:
-- ONLY set event_time if the message EXPLICITLY mentions a date, time, or relative time reference
-- "meeting tomorrow at 5pm" → event_time = tomorrow 5pm ✅
-- "cancel netflix this month" → event_time = end of this month ✅  
-- "kal 10 baje" → event_time = tomorrow 10am ✅
-- "You should try cashews from Zantye's in Goa" → event_time = null ❌ (NO date mentioned!)
-- "I need to cancel Amazon Prime" → event_time = null ❌ (NO specific date!)
-- "Rahul recommended this restaurant" → event_time = null ❌ (just a recommendation)
-- Do NOT fabricate or guess dates. If no time reference exists, event_time MUST be null.
-
-- For SUBSCRIPTIONS (Netflix, Hotstar, Amazon Prime, gym, domain, hosting):
-  - type = "subscription"
-  - location = JUST the service name (netflix, hotstar, amazon) - NOT full domain!
-  - keywords = include the service name
-  - title = action to take (Cancel Netflix, Renew Hotstar, etc)
-
-- For TRAVEL/RECOMMENDATIONS (trips, places, things to buy/do):
-  - type = "travel" or "recommendation"
-  - location = place name (goa, mumbai, delhi)
-  - keywords = include the place name and any products/shops mentioned
-  - Example: "Rahul recommended cashews at Zantye's in Goa" → type=recommendation, location=goa, keywords=[goa, cashews, zantyes, rahul]
-
-- For MEETINGS and INFORMAL COMMITMENTS:
-  - IMPORTANT: Questions like "Can we meet at 5pm?" or "Dinner Thursday?" ARE events!
-  - Informal commitments like "I'll be there Thursday" or "See you at dinner" ARE events
-  - "Let's do Thursday dinner" = meeting, event_time = this Thursday evening
-  - "Can we have a meeting on 15th at 10:30?" = meeting, extract the date/time
-  - Group chat commitments ("I'll join", "count me in", "I'm coming") = meeting events
-
-- Intent phrases like "want to", "need to", "have to", "should" indicate tasks
-- If no event/task found, return: {"events": []}
-- Keywords should include: location names, service names, product names, people names, group names
-- Confidence < 0.5 if uncertain
-- Even casual mentions of tasks/intentions should be captured with lower confidence
-
-SPAM/PROMOTION FILTER (VERY IMPORTANT):
-- Messages like "Get X at just ₹199" or "X Pro at 50% off" are PROMOTIONS, not user intent
-- Forwarded deal messages, brand/business account messages = promotional (confidence < 0.3)
-- "I want to get canva pro" = genuine intent (confidence 0.8+)
-- "Get Canva Pro at just ₹200" = promotional spam (confidence 0.2)
-- "Bro try the cashews at Zantyes" from a friend = genuine recommendation (confidence 0.9)
-- "Best cashews! Order now at 40% off!" = spam (confidence 0.1)
-- Price mentions like "at just 99", "only ₹199", "50% off" are strong spam signals
-- If uncertain whether genuine or spam, set confidence < 0.4
-
-NOISE FILTER — DO NOT EXTRACT these as events (return empty events array):
-- Developer/work chat about code: "Create problems 104 in PC", "fix the API", "push the code", "deploy to staging", "debug the issue", "check the endpoint", "play with APIs"
-- Vague "I will" statements without specific time/place: "I will start robotics man", "will do it", "I'll check", "I'll send", "will see"
-- Status updates / progress reports: "I can complete in 10%", "almost done", "working on it", "in progress", "done with the first part"
-- Past-tense completion reports: "got doc for everflow at 4am", "already sent it", "done bhai", "finished the report"
-- Casual work conversation: "share design", "review the spacing", "check after dev", "upgrade vibe coding game"
-- Meta-comments about tasks: "need to focus on this", "let me handle it", "I got this"
-- Generic social chat: "how are you", "what's up", "good morning", "haha", "lol", "ok", "nice"
-- Short ambiguous fragments: messages under 5 words without a clear event/task signal
-
-ONLY extract events that have CLEAR, SPECIFIC, ACTIONABLE intent:
-- ✅ "Cancel my Netflix subscription" — clear action + specific service
-- ✅ "Bro try cashews at Zantyes in Goa" — specific recommendation with place
-- ✅ "Meeting tomorrow at 5pm" — specific event with time
-- ✅ "Dinner Thursday at 8" — specific commitment with day/time
-- ✅ "Need to pay rent by 15th" — clear deadline
-- ❌ "I will start robotics man" — vague, no time, no specifics
-- ❌ "Complete restosmem broo" — dev chat / status update
-- ❌ "Send payment via UPI" — vague, no amount/to whom/when
-- ❌ "Create problems 104 in PC" — coding/dev task, not a life event
-- ❌ "Upgrade vibe coding game" — casual chat, not actionable
-- ❌ "Share design" — work chat, not a schedulable event`;
-
-  const response = await callGemini(prompt);
-  
-  try {
-    const parsed = JSON.parse(response);
-    return {
-      events: parsed.events || [],
-    };
-  } catch {
-    console.error('Failed to parse Gemini response:', response);
-    return { events: [] };
-  }
-}
+// extractEvents is now replaced by analyzeMessage() above.
+// Kept as alias for backward compatibility with batch import.
+export const extractEvents = analyzeMessage;
 
 export async function validateRelevance(
   url: string,
@@ -435,69 +395,209 @@ Return JSON:
   }
 }
 
-export async function classifyMessage(message: string): Promise<{ hasEvent: boolean; confidence: number }> {
-  // Quick heuristic check — be STRICT to avoid false positives
-  // Only include words that strongly signal an event/task, NOT casual chat words
-  const eventKeywords = /\b(meeting|call|tomorrow|kal|today|aaj|deadline|reminder|book|flight|hotel|birthday|party|appointment|cancel|cancle|unsubscribe|subscription|netflix|amazon|prime|hotstar|payment|order|deliver|pickup|pick up|doctor|dentist|gym|exam|interview|dinner|lunch|coffee|trip|travel|cashew|zantyes?)\b/i;
-  const timePatterns = /\b(\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)|morning|evening|night|subah|shaam|raat|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|this\s+week|tonight|tomorrow|kal|parso|\d{1,2}(st|nd|rd|th)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))\b/i;
-  const intentPatterns = /\b(want to|need to|have to|should|must|gonna|going to|planning to|remind me|don't forget|dont forget|let's|lets|can we|shall we)\s+(cancel|book|schedule|meet|buy|attend|visit|go|join|pay|renew)?\b/i;
-  
-  // HIGH-VALUE keywords — these are strong signals on their own (services, travel, recommendations)
-  // These should always pass through to Gemini even without time/intent, because they're core scenarios
-  const highValueKeywords = /\b(cancel|cancle|unsubscribe|subscription|netflix|amazon|prime|hotstar|spotify|canva|cashew|zantyes?|flight|hotel|birthday|appointment|doctor|dentist|dinner|lunch)\b/i;
-  
-  // ACTION patterns — detect actions on existing events (always process these)
-  const actionPatterns = /\b(cancel|cancle|done|already done|ho gaya|kar liya|completed it|not now|remind me later|remind me tomorrow|don't remind|mat yaad|stop reminding|never show|delete it|remove it|hata do|not interested|nahi chahiye|skip it|chhod do|leave it|postpone|reschedule|already cancelled|already unsubscribed)\b/i;
-  
-  // NOISE patterns — things that look like events but are actually dev chat / status updates / casual talk
-  const noisePatterns = /\b(create problem|test case|debug|deploy|push code|commit|merge|pull request|refactor|fix bug|api call|endpoint|function|variable|import|export|console\.log|npm|yarn|pip|git|branch|repository|leetcode|dsa|vibe coding|play with api|check after dev|in progress|wip|todo list|review (code|pr|design)|standup|sprint|jira|trello|figma file|mockup|wireframe)\b/i;
-  
-  const hasKeyword = eventKeywords.test(message);
-  const hasTime = timePatterns.test(message);
-  const hasIntent = intentPatterns.test(message);
-  const hasAction = actionPatterns.test(message);
-  const hasHighValue = highValueKeywords.test(message);
-  const isNoise = noisePatterns.test(message);
-  
-  // If it matches noise patterns and has NO time reference, skip it
-  if (isNoise && !hasTime && !hasAction) {
-    return { hasEvent: false, confidence: 0.85 };
+// ============ TRIVIAL PRE-FILTER ============
+// Minimal check to avoid wasting a Gemini call on pure noise.
+// Everything else goes to Gemini — no more brittle keyword heuristics.
+export function shouldSkipMessage(message: string): boolean {
+  const trimmed = message.trim();
+  // Skip empty or very short messages (under 3 chars)
+  if (trimmed.length < 3) return true;
+  // Skip pure emoji messages
+  if (/^[\p{Emoji}\s]+$/u.test(trimmed)) return true;
+  // Skip single-word greetings/acks
+  const trivial = /^(ok|okay|k|lol|haha|hahaha|ha|hmm|hmmm|yes|no|yep|nope|sure|yeah|yea|nah|👍|👌|❤️|🙏|😂|nice|cool|good|thanks|thx|ty|gm|gn|good morning|good night|hi|hello|hey|bye|see ya|ttyl|brb|omg|wtf|lmao|rofl|ikr)$/i;
+  if (trivial.test(trimmed)) return true;
+  return false;
+}
+
+// ============ POPUP BLUEPRINT GENERATOR ============
+// Generates the COMPLETE popup spec for the Chrome extension.
+// Extension just renders whatever this returns — no hardcoded popup logic in content.js.
+
+export interface PopupButton {
+  text: string;
+  action: string;
+  style: 'primary' | 'success' | 'secondary' | 'outline';
+}
+
+export interface PopupBlueprint {
+  icon: string;
+  headerClass: string;
+  title: string;
+  subtitle: string;
+  body: string;
+  question: string | null;
+  buttons: PopupButton[];
+  popupType: string;
+}
+
+export async function generatePopupBlueprint(
+  event: { title: string; description?: string | null; event_type?: string; location?: string | null; sender_name?: string | null; keywords?: string; event_time?: number | null },
+  triggerContext: { url?: string; pageTitle?: string; conflictingEvents?: Array<{ title: string; event_time?: number | null }> },
+  popupType: string
+): Promise<PopupBlueprint> {
+  const conflictBlock = triggerContext.conflictingEvents && triggerContext.conflictingEvents.length > 0
+    ? `\nConflicting events: ${triggerContext.conflictingEvents.map(e => {
+        let t = `"${e.title}"`;
+        if (e.event_time) t += ` at ${new Date(e.event_time * 1000).toLocaleString()}`;
+        return t;
+      }).join(', ')}`
+    : '';
+
+  const prompt = `Generate a COMPLETE popup specification for Argus memory assistant. The Chrome extension will render EXACTLY what you return — no hardcoded logic on the client.
+
+Event: "${event.title}"
+Description: "${event.description || ''}"
+Type: ${event.event_type || 'other'}
+Location: ${event.location || 'none'}
+Original sender: ${event.sender_name || 'unknown'}
+Keywords: ${event.keywords || ''}
+Event time: ${event.event_time ? new Date(event.event_time * 1000).toLocaleString() : 'none'}
+Popup type: ${popupType}
+Current URL: ${triggerContext.url || 'none'}
+Page title: ${triggerContext.pageTitle || 'none'}${conflictBlock}
+
+Return JSON:
+{
+  "icon": "single emoji for the popup header",
+  "headerClass": "discovery" | "reminder" | "context" | "conflict" | "insight",
+  "title": "short header (max 6 words)",
+  "subtitle": "one-line context (who mentioned, when)",
+  "body": "the main message to show user - natural, conversational, specific. Include sender name if known. Max 2 sentences.",
+  "question": "what should user do? (1 sentence question) or null if not needed",
+  "buttons": [
+    {"text": "emoji + label", "action": "action-name", "style": "primary|success|secondary|outline"},
+    ...
+  ],
+  "popupType": "${popupType}"
+}
+
+BUTTON ACTIONS (use these exact action names):
+- "set-reminder" — schedule a reminder for later
+- "done" / "complete" — mark event as done
+- "snooze" — remind in 30 min
+- "ignore" — never remind again
+- "acknowledge" — got it, dismiss
+- "dismiss-temp" — not now, remind later on this site
+- "dismiss-permanent" — never show on this site again
+- "view-day" — show the user's day schedule
+- "delete" — delete event entirely
+
+BUTTON STYLES: "primary" (purple gradient), "success" (green), "secondary" (gray), "outline" (border only)
+
+RULES BY POPUP TYPE:
+- event_discovery: User just sent a message with an event. Show what was found, let them set reminder or dismiss. 2-3 buttons.
+- event_reminder: Time-based trigger fired (24h/1h/15m before event). Urgent tone. 2-3 buttons.
+- context_reminder: User is on a website matching a saved event (e.g., netflix.com + cancel netflix). Persistent. 3 buttons.
+- conflict_warning: New event overlaps with existing ones. Show conflict details. 3 buttons including "View My Day".
+- insight_card: General suggestion/recommendation. Friendly tone. 2 buttons.
+- snooze_reminder: Snoozed event is back. 2-3 buttons.
+
+EXAMPLES:
+- Recommendation context: {"icon": "💡", "headerClass": "context", "title": "Remember This?", "subtitle": "From your chat with Rahul", "body": "Rahul recommended cashews at Zantye's shop in Goa. You're browsing travel sites right now!", "question": "Want to save the location?", "buttons": [{"text": "📍 Save Location", "action": "done", "style": "success"}, {"text": "💤 Not Now", "action": "dismiss-temp", "style": "secondary"}, {"text": "🚫 Not Interested", "action": "dismiss-permanent", "style": "outline"}], "popupType": "context_reminder"}
+- Subscription: {"icon": "💳", "headerClass": "context", "title": "Subscription Alert!", "subtitle": "From your notes", "body": "You planned to cancel Netflix. You're on Netflix right now.", "question": "Ready to cancel?", "buttons": [{"text": "✅ Already Done", "action": "done", "style": "success"}, {"text": "💤 Remind Later", "action": "dismiss-temp", "style": "secondary"}, {"text": "🚫 Stop Reminding", "action": "dismiss-permanent", "style": "outline"}], "popupType": "context_reminder"}
+- Conflict: {"icon": "🗓️", "headerClass": "conflict", "title": "Double-Booked?", "subtitle": "Let's sort your schedule", "body": "You told the dinner group you'd join Thursday, but this new meeting overlaps.", "question": "Want to see your full day?", "buttons": [{"text": "📅 View My Day", "action": "view-day", "style": "primary"}, {"text": "✅ Keep Both", "action": "acknowledge", "style": "secondary"}, {"text": "🚫 Skip This One", "action": "ignore", "style": "outline"}], "popupType": "conflict_warning"}
+
+Be SPECIFIC — use actual names, places, services from the event. Never be generic.`;
+
+  try {
+    const response = await callGemini(prompt);
+    const parsed = JSON.parse(response);
+    return {
+      icon: parsed.icon || '📅',
+      headerClass: parsed.headerClass || 'discovery',
+      title: parsed.title || event.title,
+      subtitle: parsed.subtitle || `From ${event.sender_name || 'your messages'}`,
+      body: parsed.body || event.description || event.title,
+      question: parsed.question || null,
+      buttons: parsed.buttons || [
+        { text: '👍 Got It', action: 'acknowledge', style: 'primary' },
+        { text: '🚫 Dismiss', action: 'ignore', style: 'outline' },
+      ],
+      popupType: parsed.popupType || popupType,
+    };
+  } catch {
+    // Fallback: generate a sensible default based on popup type
+    return getDefaultPopupBlueprint(event, popupType);
   }
+}
+
+// Fallback when Gemini fails — ensures popups always work
+function getDefaultPopupBlueprint(
+  event: { title: string; description?: string | null; event_type?: string; sender_name?: string | null },
+  popupType: string
+): PopupBlueprint {
+  const sender = event.sender_name || 'Someone';
   
-  // Action on existing event — always process
-  if (hasAction) {
-    return { hasEvent: true, confidence: 0.9 };
+  switch (popupType) {
+    case 'event_discovery':
+      return {
+        icon: '📅', headerClass: 'discovery',
+        title: 'New Event Detected!',
+        subtitle: sender !== 'Someone' ? `From your chat with ${sender}` : 'From your WhatsApp messages',
+        body: event.description || event.title,
+        question: 'Would you like to set a reminder?',
+        buttons: [
+          { text: '⏰ Set Reminder', action: 'set-reminder', style: 'primary' },
+          { text: '💤 Later', action: 'snooze', style: 'secondary' },
+          { text: '🚫 Not Interested', action: 'ignore', style: 'outline' },
+        ],
+        popupType,
+      };
+    case 'event_reminder':
+      return {
+        icon: '⏰', headerClass: 'reminder',
+        title: 'Event Starting Soon!',
+        subtitle: sender !== 'Someone' ? `${sender} mentioned this` : 'Your scheduled reminder',
+        body: event.description || event.title,
+        question: null,
+        buttons: [
+          { text: '✓ Got It', action: 'acknowledge', style: 'primary' },
+          { text: '✅ Mark Done', action: 'done', style: 'success' },
+          { text: '💤 Snooze 30min', action: 'snooze', style: 'secondary' },
+        ],
+        popupType,
+      };
+    case 'context_reminder':
+      return {
+        icon: '🎯', headerClass: 'context',
+        title: 'Remember This?',
+        subtitle: `From ${sender !== 'Someone' ? sender : 'your conversations'}`,
+        body: event.description || event.title,
+        question: 'You\'re browsing related content right now!',
+        buttons: [
+          { text: '✅ Done', action: 'done', style: 'success' },
+          { text: '💤 Not Now', action: 'dismiss-temp', style: 'secondary' },
+          { text: '🚫 Never Show', action: 'dismiss-permanent', style: 'outline' },
+        ],
+        popupType,
+      };
+    case 'conflict_warning':
+      return {
+        icon: '🗓️', headerClass: 'conflict',
+        title: 'Schedule Conflict!',
+        subtitle: 'You might be double-booked',
+        body: event.description || event.title,
+        question: 'Want to check your schedule?',
+        buttons: [
+          { text: '📅 View My Day', action: 'view-day', style: 'primary' },
+          { text: '✅ Keep Both', action: 'acknowledge', style: 'secondary' },
+          { text: '🚫 Skip This One', action: 'ignore', style: 'outline' },
+        ],
+        popupType,
+      };
+    default:
+      return {
+        icon: '💡', headerClass: 'insight',
+        title: event.title,
+        subtitle: `From ${sender}`,
+        body: event.description || event.title,
+        question: null,
+        buttons: [
+          { text: '👍 Thanks!', action: 'acknowledge', style: 'primary' },
+          { text: '🚫 Dismiss', action: 'ignore', style: 'outline' },
+        ],
+        popupType,
+      };
   }
-  
-  // High-value keyword alone is enough — let Gemini decide confidence
-  if (hasHighValue) {
-    return { hasEvent: true, confidence: 0.75 };
-  }
-  
-  // Strong signal: intent + keyword (e.g., "need to cancel netflix")
-  if (hasIntent && hasKeyword) {
-    return { hasEvent: true, confidence: 0.85 };
-  }
-  
-  // No signals at all — skip
-  if (!hasKeyword && !hasTime && !hasIntent) {
-    return { hasEvent: false, confidence: 0.9 };
-  }
-  
-  // Two signals together — likely real
-  if ((hasKeyword && hasTime) || (hasIntent && hasTime)) {
-    return { hasEvent: true, confidence: 0.85 };
-  }
-  
-  // Single generic keyword alone (without time or intent) — too noisy, skip
-  if (hasKeyword && !hasTime && !hasIntent) {
-    return { hasEvent: false, confidence: 0.7 };
-  }
-  
-  // Time reference alone — might be worth checking
-  if (hasTime && !hasKeyword && !hasIntent) {
-    return { hasEvent: true, confidence: 0.5 };
-  }
-  
-  return { hasEvent: false, confidence: 0.7 };
 }

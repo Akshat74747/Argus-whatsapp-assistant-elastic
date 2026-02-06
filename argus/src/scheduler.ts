@@ -23,7 +23,7 @@ interface NotificationPayload {
   conflictingEvents?: Array<{ id: number; title: string; event_time: number | null }>;
 }
 
-type NotifyCallback = (event: NotificationPayload) => void;
+type NotifyCallback = (event: NotificationPayload) => void | Promise<void>;
 
 let schedulerInterval: NodeJS.Timeout | null = null;
 let reminderInterval: NodeJS.Timeout | null = null;

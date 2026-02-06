@@ -80,10 +80,14 @@ function connectWebSocket() {
 // ============ WEBSOCKET MESSAGE HANDLERS ============
 
 async function handleWebSocketMessage(data) {
+  // data.popup contains the Gemini-generated popup blueprint (if available)
+  // Pass it through to content.js so it can render without hardcoded templates
+  const popup = data.popup || null;
+  
   switch (data.type) {
     case 'notification':
       console.log('[Argus] New event:', data.event?.title);
-      await sendToFirstAvailableTab({ type: 'ARGUS_NEW_EVENT', event: data.event });
+      await sendToFirstAvailableTab({ type: 'ARGUS_NEW_EVENT', event: data.event, popup });
       break;
       
     case 'conflict_warning':
@@ -92,6 +96,7 @@ async function handleWebSocketMessage(data) {
         type: 'ARGUS_CONFLICT',
         event: data.event,
         conflictingEvents: data.conflictingEvents,
+        popup,
       });
       break;
       
@@ -101,6 +106,7 @@ async function handleWebSocketMessage(data) {
         type: 'ARGUS_REMINDER',
         event: data.event || { title: data.message },
         message: data.message,
+        popup,
       });
       break;
 
@@ -111,13 +117,13 @@ async function handleWebSocketMessage(data) {
           type: 'ARGUS_CONTEXT_REMINDER',
           event: data.event,
           url: data.url,
+          popup,
         });
       }
       break;
 
     case 'action_performed':
       console.log('[Argus] Action:', data.action, 'on', data.eventTitle);
-      // Show a toast notification for the action
       await sendToFirstAvailableTab({
         type: 'ARGUS_ACTION_TOAST',
         action: data.action,
