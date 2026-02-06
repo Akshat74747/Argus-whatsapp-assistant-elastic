@@ -428,17 +428,30 @@
         };
 
       case 'conflict_warning': {
-        const conflictNames = (extraData.conflictingEvents || []).map(function(e) { return e.title; }).join(', ');
+        const conflicts = extraData.conflictingEvents || [];
+        const conflictNames = conflicts.map(function(e) { return e.title; }).join(', ');
+        // Build a human, conversational message
+        let friendlyQuestion = 'You may have overlapping commitments.';
+        if (conflicts.length === 1) {
+          const c = conflicts[0];
+          let cTime = '';
+          if (c.event_time) {
+            cTime = new Date(c.event_time * 1000).toLocaleDateString('en-US', { weekday: 'long', hour: 'numeric', minute: '2-digit' });
+          }
+          friendlyQuestion = 'You already have "' + c.title + '"' + (cTime ? ' on ' + cTime : '') + '. This new event will overlap — want to pick a different time?';
+        } else if (conflicts.length > 1) {
+          friendlyQuestion = 'Heads up! You already have ' + conflicts.length + ' things planned around this time (' + conflictNames + '). Want to find a better slot?';
+        }
         return {
-          icon: '⚠️',
+          icon: '🗓️',
           headerClass: 'conflict',
-          title: 'Schedule Conflict!',
-          subtitle: sender !== 'Someone' ? sender + ' mentioned this commitment' : 'You have overlapping commitments',
-          question: conflictNames ? 'This conflicts with: ' + conflictNames + '. Want to reschedule?' : 'You may have overlapping commitments',
+          title: 'Hmm, you might be double-booked',
+          subtitle: sender !== 'Someone' ? sender + ' mentioned this — but you already have plans' : 'Let\'s sort out your schedule',
+          question: friendlyQuestion,
           buttons: [
-            { text: '📅 Keep Both', action: 'acknowledge', style: 'primary' },
-            { text: '💤 Decide Later', action: 'snooze', style: 'secondary' },
-            { text: '🚫 Skip New One', action: 'ignore', style: 'outline' },
+            { text: '🔄 Suggest Another Time', action: 'snooze', style: 'primary' },
+            { text: '📅 Keep Both', action: 'acknowledge', style: 'secondary' },
+            { text: '🚫 Skip This One', action: 'ignore', style: 'outline' },
           ]
         };
       }
@@ -579,14 +592,15 @@
 
     // Show conflicting events for conflict_warning popup
     if (popupType === 'conflict_warning' && extraData.conflictingEvents && extraData.conflictingEvents.length > 0) {
-      html += '<div class="argus-question" style="background: #fef2f2; border-color: #fecaca; color: #991b1b;">';
-      html += '<strong>⚠️ Conflicts with:</strong><br>';
+      html += '<div class="argus-question" style="background: #fff7ed; border-color: #fed7aa; color: #9a3412; border-radius: 10px; padding: 12px 16px;">';
+      html += '<strong>📅 What\'s already on your plate:</strong><br><br>';
       extraData.conflictingEvents.forEach(function(conflict) {
         let conflictTime = '';
         if (conflict.event_time) {
-          conflictTime = new Date(conflict.event_time * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          const d = new Date(conflict.event_time * 1000);
+          conflictTime = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' at ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
         }
-        html += '• ' + escapeHtml(conflict.title) + (conflictTime ? ' (' + conflictTime + ')' : '') + '<br>';
+        html += '&nbsp;&nbsp;→ ' + escapeHtml(conflict.title) + (conflictTime ? ' — ' + conflictTime : '') + '<br>';
       });
       html += '</div>';
     }
