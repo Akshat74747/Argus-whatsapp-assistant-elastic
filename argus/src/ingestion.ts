@@ -1,4 +1,4 @@
-import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEventTime } from './db.js';
+import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEventTime, findDuplicateEvent } from './db.js';
 import { extractEvents, classifyMessage, detectAction } from './gemini.js';
 import type { Message, WhatsAppWebhook, TriggerType } from './types.js';
 
@@ -219,7 +219,17 @@ export async function processMessage(
     const extraction = await extractEvents(message.content, context);
 
     for (const event of extraction.events) {
-      if (event.confidence < 0.4) continue; // Skip low confidence
+      if (event.confidence < 0.65) {
+        console.log(`⏭️ Skipping low-confidence event: "${event.title}" (${event.confidence})`);
+        continue;
+      }
+
+      // Deduplication: skip if a similar event already exists in last 48 hours
+      const isDuplicate = findDuplicateEvent(event.title, 48);
+      if (isDuplicate) {
+        console.log(`⏭️ Skipping duplicate event: "${event.title}" (matches existing #${isDuplicate.id}: "${isDuplicate.title}")`);
+        continue;
+      }
 
       // Parse event time
       let eventTime: number | null = null;
@@ -285,9 +295,10 @@ export async function processMessage(
         }
       }
 
-      // For events WITHOUT a time, auto-schedule them (context/URL-based events)
-      // For events WITH a time, they start as 'discovered' and user can set reminder
-      const initialStatus = eventTime ? 'discovered' as const : 'scheduled' as const;
+      // Events start as 'discovered' — user must approve/acknowledge them
+      // Context/URL-based events (recommendations, subscriptions) go to 'scheduled' since they trigger on URL visits
+      const isContextEvent = contextUrl !== null;
+      const initialStatus = isContextEvent ? 'scheduled' as const : 'discovered' as const;
 
       // Insert event
       const eventData = {

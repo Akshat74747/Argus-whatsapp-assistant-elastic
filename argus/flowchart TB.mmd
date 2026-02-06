@@ -1,141 +1,174 @@
 flowchart TB
     %% ============ EXTERNAL SOURCES ============
-    WA["WhatsApp User Messages"]
-    CHROME["Chrome Browser Tabs"]
+    WA["📱 WhatsApp Messages"]
+    CHROME["🌐 Chrome Browser"]
 
-    %% ============ EVOLUTION API LAYER ============
-    subgraph EVOL_LAYER ["Evolution API Layer"]
-        direction TB
-        EVOL["Evolution API :8080"]
-        PG[("PostgreSQL DB")]
-        EVOL <--> PG
+    %% ============ EVOLUTION API ============
+    subgraph EVOL ["⚡ Evolution API :8080"]
+        direction LR
+        EVOL_SVC["Evolution API"]
+        PG[("PostgreSQL")]
+        EVOL_SVC <--> PG
     end
 
     %% ============ ARGUS SERVER ============
-    subgraph ARGUS_SERVER ["Argus Server :3000"]
+    subgraph ARGUS ["🧠 Argus Server :3000"]
         direction TB
 
-        subgraph INGESTION ["Message Ingestion Pipeline"]
+        %% --- Ingestion Pipeline ---
+        subgraph INGEST ["📥 Ingestion Pipeline"]
             direction TB
-            WH["Webhook Receiver /api/webhook/whatsapp"]
-            CLASSIFY["classifyMessage - Quick Filter"]
-            DETECT["detectAction - NLP Action Detection"]
-            EXTRACT["extractEvents - Gemini Event Extraction"]
-            PROCESS["processMessage - Orchestrator"]
-
-            WH --> PROCESS
-            PROCESS --> CLASSIFY
-            CLASSIFY -->|"Has action pattern"| DETECT
-            CLASSIFY -->|"Has event keywords"| EXTRACT
-            DETECT -->|"No action found"| EXTRACT
-            DETECT -->|"Action found"| ACTION_EXEC["Execute Action on DB"]
+            WH["Webhook Receiver\n/api/webhook/whatsapp"]
+            CLASSIFY["classifyMessage()\nStrict Keyword + Noise Filter"]
+            DETECT["detectAction()\nCancel / Done / Snooze / Ignore"]
+            EXTRACT["extractEvents()\nGemini Extraction + Spam & Noise Filter"]
+            DEDUP["findDuplicateEvent()\n48h Title Similarity Check"]
+            CONF_GATE["Confidence Gate\nthreshold ≥ 0.65"]
+            CONFLICT["checkEventConflicts()\n60min Window"]
+            SAVE["insertEvent() + insertTrigger()"]
         end
 
-        subgraph AI_ENGINE ["Gemini AI Engine"]
+        %% --- AI Engine ---
+        subgraph AI ["🤖 Gemini AI Engine"]
             direction TB
-            GEMINI_API["Gemini 2.5 Flash Preview"]
-            CHAT_CTX["chatWithContext - AI Chat"]
-            MATCH_VAL["matchContext - URL Validator"]
+            GEMINI["Gemini 3 Flash Preview\n+ System Prompt"]
+            GEN_NOTIF["generateNotificationMessage()"]
+            VALIDATE["validateRelevance()\nURL ↔ Event Matching"]
+            AI_CHAT["chatWithContext()\nNatural Language Q&A"]
         end
 
-        subgraph SCHEDULER_SYS ["Scheduler System"]
+        %% --- Scheduler ---
+        subgraph SCHED ["⏰ Scheduler"]
             direction TB
-            TIME_TRIG["checkTimeTriggers - 60s interval"]
-            DUE_REM["checkDueReminders - 30s interval"]
-            SNOOZE_CHK["checkSnoozedEvents - 30s interval"]
+            TIME_CHK["checkTimeTriggers()\n24h · 1h · 15m intervals"]
+            REM_CHK["checkDueReminders()\n30s poll"]
+            SNOOZE_CHK["checkSnoozedEvents()\n30s poll"]
         end
 
-        subgraph DATA_LAYER ["Data Layer"]
-            direction TB
+        %% --- Data Layer ---
+        subgraph DATA ["💾 Data Layer"]
+            direction LR
             SQLITE[("SQLite + FTS5")]
-            DB_OPS["db.ts - CRUD Operations"]
+            DB_OPS["db.ts CRUD"]
             DB_OPS <--> SQLITE
         end
 
-        subgraph API_ENDPOINTS ["REST API"]
+        %% --- REST API ---
+        subgraph API ["🔌 REST API"]
             direction TB
-            EP_EVENTS["/api/events"]
-            EP_STATS["/api/stats"]
-            EP_ACTIONS["/api/events/:id/action"]
+            EP_EVENTS["/api/events\n/api/events/:id"]
+            EP_STATS["/api/stats\n/api/health"]
+            EP_ACTIONS["/api/events/:id/action\ncomplete · snooze · ignore · dismiss"]
             EP_CHAT["/api/chat"]
-            EP_CONTEXT["/api/context-check"]
-            EP_HEALTH["/api/health"]
+            EP_CTX["/api/context-check"]
+            EP_DAY["/api/events/day/:timestamp"]
         end
 
-        WS_SERVER["WebSocket Server /ws"]
+        WS["🔗 WebSocket /ws"]
     end
 
     %% ============ CHROME EXTENSION ============
-    subgraph EXTENSION ["Chrome Extension - Manifest V3"]
+    subgraph EXT ["🧩 Chrome Extension · Manifest V3"]
         direction TB
 
-        subgraph BG_WORKER ["Service Worker"]
-            direction TB
-            BG["background.js v2.4"]
-            WS_CLIENT["WebSocket Client"]
-            BG <--> WS_CLIENT
+        subgraph BG ["Service Worker"]
+            direction LR
+            BG_JS["background.js"]
+            WS_CLI["WebSocket Client"]
+            BG_JS <--> WS_CLI
         end
 
-        subgraph CONTENT ["Content Script"]
+        subgraph CS ["Content Script"]
             direction TB
-            CS["content.js"]
-            POPUP_MGR["Dynamic Popup Manager"]
+            CS_JS["content.js"]
+            POPUP["Dynamic Popup Manager\nDiscovery · Reminder · Context · Conflict"]
             TOAST["Toast Notifications"]
-            CS --> POPUP_MGR
-            CS --> TOAST
+            DAY_VIEW["View My Day\nColor-coded Timeline"]
         end
 
-        subgraph SIDEPANEL ["AI Chat Sidebar"]
-            direction TB
+        subgraph SIDE ["AI Chat Sidebar"]
+            direction LR
             SP_HTML["sidepanel.html"]
             SP_JS["sidepanel.js"]
-            SP_HTML <--> SP_JS
         end
 
-        subgraph EXT_POPUP ["Extension Popup"]
-            direction TB
+        subgraph EXT_POP ["Extension Popup"]
+            direction LR
             POP_HTML["popup.html"]
             POP_JS["popup.js"]
-            POP_HTML <--> POP_JS
         end
     end
 
-    %% ============ CONNECTIONS ============
-    WA -->|"messages"| EVOL
-    EVOL -->|"webhook POST"| WH
+    %% ============ 3 CORE SCENARIOS ============
+    subgraph SCENARIOS ["🎯 3 Core Scenarios"]
+        direction LR
+        S1["🥜 Goa Cashew\nRecommendation → URL trigger\non travel/goa sites"]
+        S4["📺 Netflix Cancel\nSubscription → URL trigger\non netflix.com"]
+        S5["📅 Calendar Conflict\nInformal dinner commitment →\nConflict when new meeting overlaps"]
+    end
 
-    EXTRACT -->|"AI call"| GEMINI_API
-    DETECT -->|"AI call"| GEMINI_API
-    CHAT_CTX -->|"AI call"| GEMINI_API
+    %% ============ INGESTION FLOW ============
+    WA -->|"messages"| EVOL_SVC
+    EVOL_SVC -->|"webhook POST"| WH
+    WH --> CLASSIFY
+    CLASSIFY -->|"❌ noise / no signal"| SKIP_MSG["⏭️ Skip"]
+    CLASSIFY -->|"✅ has action"| DETECT
+    CLASSIFY -->|"✅ has event signal"| EXTRACT
+    DETECT -->|"action found"| ACTION_EXEC["Execute on DB\ndelete · complete · snooze"]
+    DETECT -->|"no action"| EXTRACT
+    EXTRACT -->|"AI call"| GEMINI
+    EXTRACT --> CONF_GATE
+    CONF_GATE -->|"< 0.65 → reject"| SKIP_LOW["⏭️ Low Confidence"]
+    CONF_GATE -->|"≥ 0.65 → check dedup"| DEDUP
+    DEDUP -->|"duplicate found → skip"| SKIP_DUP["⏭️ Duplicate"]
+    DEDUP -->|"unique → save"| SAVE
+    SAVE --> CONFLICT
+    CONFLICT -->|"overlap detected"| WS
+    SAVE --> DB_OPS
 
-    EXTRACT --> DB_OPS
-    ACTION_EXEC --> DB_OPS
+    %% ============ AI ENGINE CONNECTIONS ============
+    DETECT -->|"AI call"| GEMINI
+    AI_CHAT -->|"AI call"| GEMINI
+    VALIDATE -->|"AI call"| GEMINI
+    GEN_NOTIF -->|"AI call"| GEMINI
+    VALIDATE --> DB_OPS
 
-    TIME_TRIG --> DB_OPS
-    DUE_REM --> DB_OPS
+    %% ============ SCHEDULER → DATA → WS ============
+    TIME_CHK --> DB_OPS
+    REM_CHK --> DB_OPS
     SNOOZE_CHK --> DB_OPS
+    SCHED -->|"broadcast events"| WS
 
-    SCHEDULER_SYS -->|"broadcast events"| WS_SERVER
+    %% ============ WS ↔ EXTENSION ============
+    WS_CLI <-->|"WebSocket :3000/ws"| WS
+    WS_CLI -->|"popup data"| CS_JS
+    WS_CLI -->|"notifications"| BG_JS
 
-    WS_CLIENT <-->|"WebSocket :3000/ws"| WS_SERVER
-    WS_CLIENT -->|"popup data"| CS
-    WS_CLIENT -->|"notifications"| BG
-
-    EP_CHAT -->|"query"| CHAT_CTX
-    EP_CONTEXT -->|"validate"| MATCH_VAL
-    EP_ACTIONS --> DB_OPS
-    EP_EVENTS --> DB_OPS
-    EP_STATS --> DB_OPS
-
+    %% ============ EXTENSION → API ============
+    CS_JS --> POPUP
+    CS_JS --> TOAST
+    CS_JS --> DAY_VIEW
     SP_JS -->|"POST /api/chat"| EP_CHAT
     POP_JS -->|"GET /api/events"| EP_EVENTS
     POP_JS -->|"GET /api/stats"| EP_STATS
-    CS -->|"POST /api/events/:id/action"| EP_ACTIONS
+    CS_JS -->|"POST /api/events/:id/action"| EP_ACTIONS
 
-    CHROME -->|"URL changes"| BG
-    BG -->|"POST /api/context-check"| EP_CONTEXT
-    EP_CONTEXT -->|"matching events"| BG
-    BG -->|"context popup"| CS
+    %% ============ CONTEXT TRIGGER FLOW ============
+    CHROME -->|"URL changes"| BG_JS
+    BG_JS -->|"POST /api/context-check"| EP_CTX
+    EP_CTX -->|"validate"| VALIDATE
+    EP_CTX -->|"matching events"| BG_JS
+    BG_JS -->|"context popup"| CS_JS
 
-    MATCH_VAL -->|"AI validation"| GEMINI_API
-    MATCH_VAL --> DB_OPS
+    %% ============ API → DATA ============
+    EP_CHAT --> AI_CHAT
+    EP_ACTIONS --> DB_OPS
+    EP_EVENTS --> DB_OPS
+    EP_STATS --> DB_OPS
+    EP_DAY --> DB_OPS
+    ACTION_EXEC --> DB_OPS
+
+    %% ============ SCENARIO TRIGGERS ============
+    S1 -.->|"travel site URL match"| EP_CTX
+    S4 -.->|"netflix.com URL match"| EP_CTX
+    S5 -.->|"time overlap check"| CONFLICT
