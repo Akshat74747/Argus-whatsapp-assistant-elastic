@@ -2,6 +2,24 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.4.1] - 2026-02-06
+
+### Fixed
+- **XSS Vulnerabilities** - Added `escapeHtml()` to index.html dashboard; all event titles, descriptions, locations, WhatsApp messages, and phone numbers are now sanitized
+- **Duplicate `scheduleEvent()`** - Removed duplicate function definition in index.html (was defined twice)
+- **Wrong Initial Filter** - Dashboard `currentFilter` changed from `'pending'` to `'discovered'` to match the active tab
+- **Misleading `dismissEvent` Alias** - Removed `dismissEvent = snoozeEvent` alias (dismiss ≠ snooze)
+- **Missing CSS Badge Classes** - Added `badge-dismissed` and `badge-pending` styles
+- **Version Header Mismatch** - background.js header comment updated from v2.2 to v2.4
+
+### Added
+- **AI Chat Test Tool** - Dashboard Test Tools section now includes AI Chat tester (`/api/chat` endpoint)
+- **ARCH.pdf** - PDF export of architecture diagram via `mmdc` CLI
+- **Complete API Docs** - Settings section now lists all 14 endpoints including set-reminder, snooze, ignore, dismiss, acknowledge, chat
+
+### Changed
+- **Hardcoded Name Removed** - sidepanel.html quick action changed from "What did Rahul recommend?" to generic "Show all recommendations from friends"
+
 ## [2.4.0] - 2026-02-06
 
 ### Added

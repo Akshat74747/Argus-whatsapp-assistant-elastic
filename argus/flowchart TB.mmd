@@ -1,0 +1,141 @@
+flowchart TB
+    %% ============ EXTERNAL SOURCES ============
+    WA["WhatsApp User Messages"]
+    CHROME["Chrome Browser Tabs"]
+
+    %% ============ EVOLUTION API LAYER ============
+    subgraph EVOL_LAYER ["Evolution API Layer"]
+        direction TB
+        EVOL["Evolution API :8080"]
+        PG[("PostgreSQL DB")]
+        EVOL <--> PG
+    end
+
+    %% ============ ARGUS SERVER ============
+    subgraph ARGUS_SERVER ["Argus Server :3000"]
+        direction TB
+
+        subgraph INGESTION ["Message Ingestion Pipeline"]
+            direction TB
+            WH["Webhook Receiver /api/webhook/whatsapp"]
+            CLASSIFY["classifyMessage - Quick Filter"]
+            DETECT["detectAction - NLP Action Detection"]
+            EXTRACT["extractEvents - Gemini Event Extraction"]
+            PROCESS["processMessage - Orchestrator"]
+
+            WH --> PROCESS
+            PROCESS --> CLASSIFY
+            CLASSIFY -->|"Has action pattern"| DETECT
+            CLASSIFY -->|"Has event keywords"| EXTRACT
+            DETECT -->|"No action found"| EXTRACT
+            DETECT -->|"Action found"| ACTION_EXEC["Execute Action on DB"]
+        end
+
+        subgraph AI_ENGINE ["Gemini AI Engine"]
+            direction TB
+            GEMINI_API["Gemini 2.5 Flash Preview"]
+            CHAT_CTX["chatWithContext - AI Chat"]
+            MATCH_VAL["matchContext - URL Validator"]
+        end
+
+        subgraph SCHEDULER_SYS ["Scheduler System"]
+            direction TB
+            TIME_TRIG["checkTimeTriggers - 60s interval"]
+            DUE_REM["checkDueReminders - 30s interval"]
+            SNOOZE_CHK["checkSnoozedEvents - 30s interval"]
+        end
+
+        subgraph DATA_LAYER ["Data Layer"]
+            direction TB
+            SQLITE[("SQLite + FTS5")]
+            DB_OPS["db.ts - CRUD Operations"]
+            DB_OPS <--> SQLITE
+        end
+
+        subgraph API_ENDPOINTS ["REST API"]
+            direction TB
+            EP_EVENTS["/api/events"]
+            EP_STATS["/api/stats"]
+            EP_ACTIONS["/api/events/:id/action"]
+            EP_CHAT["/api/chat"]
+            EP_CONTEXT["/api/context-check"]
+            EP_HEALTH["/api/health"]
+        end
+
+        WS_SERVER["WebSocket Server /ws"]
+    end
+
+    %% ============ CHROME EXTENSION ============
+    subgraph EXTENSION ["Chrome Extension - Manifest V3"]
+        direction TB
+
+        subgraph BG_WORKER ["Service Worker"]
+            direction TB
+            BG["background.js v2.4"]
+            WS_CLIENT["WebSocket Client"]
+            BG <--> WS_CLIENT
+        end
+
+        subgraph CONTENT ["Content Script"]
+            direction TB
+            CS["content.js"]
+            POPUP_MGR["Dynamic Popup Manager"]
+            TOAST["Toast Notifications"]
+            CS --> POPUP_MGR
+            CS --> TOAST
+        end
+
+        subgraph SIDEPANEL ["AI Chat Sidebar"]
+            direction TB
+            SP_HTML["sidepanel.html"]
+            SP_JS["sidepanel.js"]
+            SP_HTML <--> SP_JS
+        end
+
+        subgraph EXT_POPUP ["Extension Popup"]
+            direction TB
+            POP_HTML["popup.html"]
+            POP_JS["popup.js"]
+            POP_HTML <--> POP_JS
+        end
+    end
+
+    %% ============ CONNECTIONS ============
+    WA -->|"messages"| EVOL
+    EVOL -->|"webhook POST"| WH
+
+    EXTRACT -->|"AI call"| GEMINI_API
+    DETECT -->|"AI call"| GEMINI_API
+    CHAT_CTX -->|"AI call"| GEMINI_API
+
+    EXTRACT --> DB_OPS
+    ACTION_EXEC --> DB_OPS
+
+    TIME_TRIG --> DB_OPS
+    DUE_REM --> DB_OPS
+    SNOOZE_CHK --> DB_OPS
+
+    SCHEDULER_SYS -->|"broadcast events"| WS_SERVER
+
+    WS_CLIENT <-->|"WebSocket :3000/ws"| WS_SERVER
+    WS_CLIENT -->|"popup data"| CS
+    WS_CLIENT -->|"notifications"| BG
+
+    EP_CHAT -->|"query"| CHAT_CTX
+    EP_CONTEXT -->|"validate"| MATCH_VAL
+    EP_ACTIONS --> DB_OPS
+    EP_EVENTS --> DB_OPS
+    EP_STATS --> DB_OPS
+
+    SP_JS -->|"POST /api/chat"| EP_CHAT
+    POP_JS -->|"GET /api/events"| EP_EVENTS
+    POP_JS -->|"GET /api/stats"| EP_STATS
+    CS -->|"POST /api/events/:id/action"| EP_ACTIONS
+
+    CHROME -->|"URL changes"| BG
+    BG -->|"POST /api/context-check"| EP_CONTEXT
+    EP_CONTEXT -->|"matching events"| BG
+    BG -->|"context popup"| CS
+
+    MATCH_VAL -->|"AI validation"| GEMINI_API
+    MATCH_VAL --> DB_OPS
