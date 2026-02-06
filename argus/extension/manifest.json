@@ -1,21 +1,24 @@
 {
   "manifest_version": 3,
   "name": "Argus - Proactive Memory Assistant",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AI-powered WhatsApp memory assistant that reminds you about relevant events while browsing",
   "permissions": [
     "tabs",
     "notifications",
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "action": {
     "default_popup": "popup.html",

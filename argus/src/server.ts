@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent } from './db.js';
-import { initGemini } from './gemini.js';
+import { initGemini, chatWithContext } from './gemini.js';
 import { processWebhook } from './ingestion.js';
 import { matchContext, extractContextFromUrl } from './matcher.js';
 import { startScheduler, stopScheduler, checkContextTriggers } from './scheduler.js';
@@ -375,6 +375,51 @@ app.get('/api/whatsapp/stats', async (_req: Request, res: Response) => {
   res.json(stats);
 });
 
+// ============ AI Chat API (for Chrome Extension sidebar) ============
+app.post('/api/chat', async (req: Request, res: Response) => {
+  try {
+    const { query, history } = req.body;
+    if (!query || typeof query !== 'string') {
+      res.status(400).json({ error: 'Query is required' });
+      return;
+    }
+
+    // Get all active events for context
+    const allEvents = getAllEvents({ limit: 100, offset: 0, status: 'all' });
+    const eventsForContext = allEvents.map((e: any) => ({
+      id: e.id,
+      title: e.title,
+      description: e.description,
+      event_type: e.event_type,
+      event_time: e.event_time,
+      location: e.location,
+      status: e.status,
+      keywords: e.keywords,
+      sender_name: e.sender_name,
+      context_url: e.context_url,
+    }));
+
+    console.log(`💬 [CHAT] Query: "${query}" (${eventsForContext.length} events in context)`);
+
+    const chatResult = await chatWithContext(query, eventsForContext, history || []);
+
+    // Get referenced event objects
+    const referencedEvents = chatResult.relevantEventIds
+      .map((id: number) => allEvents.find((e: any) => e.id === id))
+      .filter(Boolean);
+
+    console.log(`💬 [CHAT] Response: "${chatResult.response.substring(0, 80)}..." (${referencedEvents.length} events referenced)`);
+
+    res.json({
+      response: chatResult.response,
+      events: referencedEvents,
+    });
+  } catch (error) {
+    console.error('Chat error:', error);
+    res.status(500).json({ error: 'Failed to process chat query' });
+  }
+});
+
 // WhatsApp webhook
 app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
   try {
@@ -396,11 +441,26 @@ app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
       skipGroupMessages: config.skipGroupMessages,
     });
 
+    // ============ Handle ACTION results (cancel, done, postpone, etc.) ============
+    if (result.actionPerformed) {
+      console.log(`🎯 [WEBHOOK] Action performed: ${result.actionPerformed.action} on "${result.actionPerformed.targetEventTitle}" (id: ${result.actionPerformed.targetEventId})`);
+      
+      // Broadcast the action to all clients so they update their UI
+      broadcast({
+        type: 'action_performed',
+        action: result.actionPerformed.action,
+        eventId: result.actionPerformed.targetEventId,
+        eventTitle: result.actionPerformed.targetEventTitle,
+        message: result.actionPerformed.message,
+      });
+    }
+
+    // ============ Handle NEW events ============
     // Broadcast each event to WebSocket clients for overlay notifications
     if (result.eventsCreated > 0 && result.events) {
       console.log(`✨ [WEBHOOK] Created ${result.eventsCreated} event(s) from message`);
       for (const event of result.events) {
-        console.log(`   └─ Event #${event.id}: "${event.title}" (type: ${event.event_type}, status: discovered, context_url: ${event.context_url || 'none'})`);
+        console.log(`   └─ Event #${event.id}: "${event.title}" (type: ${event.event_type}, status: discovered, context_url: ${event.context_url || 'none'}, sender: ${event.sender_name || 'unknown'})`);
         
         // Send ONE notification per event - include conflict info if present
         const hasConflicts = event.conflicts && event.conflicts.length > 0;

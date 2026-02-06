@@ -92,7 +92,15 @@ postgres:16-alpine          # Evolution DB
 | /api/events/:id | DELETE | Delete event permanently |
 | /api/webhook/whatsapp | POST | WhatsApp webhook |
 | /api/context-check | POST | Check URL context |
+| /api/chat | POST | AI Chat - context-aware conversation |
 | /ws | WS | Real-time notifications |
+
+## Chrome Extension Components
+- **manifest.json** - Manifest V3, sidePanel permission, no `"type": "module"` in background
+- **background.js** - Service worker: WebSocket, API calls, sidePanel handler
+- **content.js** - Dynamic popups overlay (5 types), toast notifications
+- **sidepanel.html/js** - AI Chat sidebar with markdown rendering
+- **popup.html/js** - Extension popup with event cards and stats
 
 ## Event Status Lifecycle
 ```

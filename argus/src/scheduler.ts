@@ -185,7 +185,7 @@ function checkTimeTriggers(): void {
       if (triggerTime <= now + 5 * 60 * 1000) {
         const event = getEventById(trigger.event_id);
         
-        if (event && (event.status === 'pending' || event.status === 'scheduled')) {
+        if (event && (event.status === 'pending' || event.status === 'scheduled' || event.status === 'discovered' || event.status === 'reminded')) {
           // Fire notification
           if (notifyCallback) {
             notifyCallback({
