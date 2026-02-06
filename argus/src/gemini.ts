@@ -28,8 +28,10 @@ CRITICAL RULES:
 - A message like "get canva at 199" or "netflix at just 99" is a PROMOTIONAL/SPAM message, NOT a genuine user intent — set confidence < 0.3
 - Genuine intent examples: "I want to cancel netflix", "need to get canva pro for work", "bro try cashews at Zantyes in Goa"
 - Always consider the FULL conversation context — who said what, and whether it is the USER's own intent vs someone forwarding a deal
-- Be conservative: fewer false positives is much better than catching everything
+- Be VERY conservative: fewer false positives is MUCH better than catching everything
 - When the sender is a business/brand account, treat messages as promotional (low confidence)
+- DO NOT extract developer/coding chat, vague "I will" statements, work status updates, or casual social chat as events
+- Only extract events with CLEAR, SPECIFIC, ACTIONABLE intent (who/what/when/where)
 - Return valid JSON only`;
 
 async function callGemini(prompt: string, jsonMode = true): Promise<string> {
@@ -270,7 +272,30 @@ SPAM/PROMOTION FILTER (VERY IMPORTANT):
 - "Bro try the cashews at Zantyes" from a friend = genuine recommendation (confidence 0.9)
 - "Best cashews! Order now at 40% off!" = spam (confidence 0.1)
 - Price mentions like "at just 99", "only ₹199", "50% off" are strong spam signals
-- If uncertain whether genuine or spam, set confidence < 0.4`;
+- If uncertain whether genuine or spam, set confidence < 0.4
+
+NOISE FILTER — DO NOT EXTRACT these as events (return empty events array):
+- Developer/work chat about code: "Create problems 104 in PC", "fix the API", "push the code", "deploy to staging", "debug the issue", "check the endpoint", "play with APIs"
+- Vague "I will" statements without specific time/place: "I will start robotics man", "will do it", "I'll check", "I'll send", "will see"
+- Status updates / progress reports: "I can complete in 10%", "almost done", "working on it", "in progress", "done with the first part"
+- Past-tense completion reports: "got doc for everflow at 4am", "already sent it", "done bhai", "finished the report"
+- Casual work conversation: "share design", "review the spacing", "check after dev", "upgrade vibe coding game"
+- Meta-comments about tasks: "need to focus on this", "let me handle it", "I got this"
+- Generic social chat: "how are you", "what's up", "good morning", "haha", "lol", "ok", "nice"
+- Short ambiguous fragments: messages under 5 words without a clear event/task signal
+
+ONLY extract events that have CLEAR, SPECIFIC, ACTIONABLE intent:
+- ✅ "Cancel my Netflix subscription" — clear action + specific service
+- ✅ "Bro try cashews at Zantyes in Goa" — specific recommendation with place
+- ✅ "Meeting tomorrow at 5pm" — specific event with time
+- ✅ "Dinner Thursday at 8" — specific commitment with day/time
+- ✅ "Need to pay rent by 15th" — clear deadline
+- ❌ "I will start robotics man" — vague, no time, no specifics
+- ❌ "Complete restosmem broo" — dev chat / status update
+- ❌ "Send payment via UPI" — vague, no amount/to whom/when
+- ❌ "Create problems 104 in PC" — coding/dev task, not a life event
+- ❌ "Upgrade vibe coding game" — casual chat, not actionable
+- ❌ "Share design" — work chat, not a schedulable event`;
 
   const response = await callGemini(prompt);
   
@@ -411,37 +436,68 @@ Return JSON:
 }
 
 export async function classifyMessage(message: string): Promise<{ hasEvent: boolean; confidence: number }> {
-  // Quick heuristic check first - include common typos and variations
-  const eventKeywords = /\b(meet|meeting|call|tomorrow|kal|today|aaj|deadline|reminder|book|flight|hotel|birthday|party|event|task|todo|buy|get|bring|send|submit|complete|finish|cancel|cancle|unsubscribe|subscription|netflix|amazon|prime|pay|payment|order|deliver|pickup|pick up|doctor|dentist|appointment|gym|class|lesson|exam|test|interview|plan|plans|planning|want to|need to|have to|should|must|gonna|going to|will|dinner|lunch|coffee|drinks|visit|shop|recommend|try|cashew|trip|travel)\b/i;
-  const timePatterns = /\b(\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)|morning|evening|night|subah|shaam|raat|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month|next|this|tonight|today|tomorrow|kal|parso|\d{1,2}(st|nd|rd|th))\b/i;
-  const intentPatterns = /\b(want|need|have|should|must|gonna|going|will|planning|plan|remind|remember|don't forget|dont forget|let's|lets|can we|shall we|how about|what about)\s+(to|me|do|go|have|meet)?\b/i;
+  // Quick heuristic check — be STRICT to avoid false positives
+  // Only include words that strongly signal an event/task, NOT casual chat words
+  const eventKeywords = /\b(meeting|call|tomorrow|kal|today|aaj|deadline|reminder|book|flight|hotel|birthday|party|appointment|cancel|cancle|unsubscribe|subscription|netflix|amazon|prime|hotstar|payment|order|deliver|pickup|pick up|doctor|dentist|gym|exam|interview|dinner|lunch|coffee|trip|travel|cashew|zantyes?)\b/i;
+  const timePatterns = /\b(\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)|morning|evening|night|subah|shaam|raat|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|this\s+week|tonight|tomorrow|kal|parso|\d{1,2}(st|nd|rd|th)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))\b/i;
+  const intentPatterns = /\b(want to|need to|have to|should|must|gonna|going to|planning to|remind me|don't forget|dont forget|let's|lets|can we|shall we)\s+(cancel|book|schedule|meet|buy|attend|visit|go|join|pay|renew)?\b/i;
   
-  // ACTION patterns - detect actions on existing events
-  const actionPatterns = /\b(cancel|cancle|done|already done|ho gaya|kar liya|completed|not now|later|baad mein|remind me later|remind me tomorrow|don't remind|mat yaad|stop reminding|never show|delete|remove|hata do|don't bring|not interested|nahi chahiye|skip|chhod do|leave it|postpone|push it|aage karo|already cancelled|already unsubscribed|change to|move to|reschedule|I don't care)\b/i;
+  // HIGH-VALUE keywords — these are strong signals on their own (services, travel, recommendations)
+  // These should always pass through to Gemini even without time/intent, because they're core scenarios
+  const highValueKeywords = /\b(cancel|cancle|unsubscribe|subscription|netflix|amazon|prime|hotstar|spotify|canva|cashew|zantyes?|flight|hotel|birthday|appointment|doctor|dentist|dinner|lunch)\b/i;
+  
+  // ACTION patterns — detect actions on existing events (always process these)
+  const actionPatterns = /\b(cancel|cancle|done|already done|ho gaya|kar liya|completed it|not now|remind me later|remind me tomorrow|don't remind|mat yaad|stop reminding|never show|delete it|remove it|hata do|not interested|nahi chahiye|skip it|chhod do|leave it|postpone|reschedule|already cancelled|already unsubscribed)\b/i;
+  
+  // NOISE patterns — things that look like events but are actually dev chat / status updates / casual talk
+  const noisePatterns = /\b(create problem|test case|debug|deploy|push code|commit|merge|pull request|refactor|fix bug|api call|endpoint|function|variable|import|export|console\.log|npm|yarn|pip|git|branch|repository|leetcode|dsa|vibe coding|play with api|check after dev|in progress|wip|todo list|review (code|pr|design)|standup|sprint|jira|trello|figma file|mockup|wireframe)\b/i;
   
   const hasKeyword = eventKeywords.test(message);
   const hasTime = timePatterns.test(message);
   const hasIntent = intentPatterns.test(message);
   const hasAction = actionPatterns.test(message);
+  const hasHighValue = highValueKeywords.test(message);
+  const isNoise = noisePatterns.test(message);
   
-  // Action on existing event - always process
+  // If it matches noise patterns and has NO time reference, skip it
+  if (isNoise && !hasTime && !hasAction) {
+    return { hasEvent: false, confidence: 0.85 };
+  }
+  
+  // Action on existing event — always process
   if (hasAction) {
     return { hasEvent: true, confidence: 0.9 };
   }
   
-  // If message has intent + keyword, it's likely an event
+  // High-value keyword alone is enough — let Gemini decide confidence
+  if (hasHighValue) {
+    return { hasEvent: true, confidence: 0.75 };
+  }
+  
+  // Strong signal: intent + keyword (e.g., "need to cancel netflix")
   if (hasIntent && hasKeyword) {
     return { hasEvent: true, confidence: 0.85 };
   }
   
+  // No signals at all — skip
   if (!hasKeyword && !hasTime && !hasIntent) {
     return { hasEvent: false, confidence: 0.9 };
   }
   
+  // Two signals together — likely real
   if ((hasKeyword && hasTime) || (hasIntent && hasTime)) {
     return { hasEvent: true, confidence: 0.85 };
   }
   
-  // Single signal - still worth checking with Gemini
-  return { hasEvent: hasKeyword || hasTime || hasIntent, confidence: 0.6 };
+  // Single generic keyword alone (without time or intent) — too noisy, skip
+  if (hasKeyword && !hasTime && !hasIntent) {
+    return { hasEvent: false, confidence: 0.7 };
+  }
+  
+  // Time reference alone — might be worth checking
+  if (hasTime && !hasKeyword && !hasIntent) {
+    return { hasEvent: true, confidence: 0.5 };
+  }
+  
+  return { hasEvent: false, confidence: 0.7 };
 }

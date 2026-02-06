@@ -201,6 +201,51 @@ export function getMessageById(id: string): Message | undefined {
 }
 
 // ============ Event Operations ============
+
+/**
+ * Check if a similar event already exists within the last N hours.
+ * Uses title similarity (case-insensitive, trimmed) to find duplicates.
+ * Returns the existing event if found, null otherwise.
+ */
+export function findDuplicateEvent(title: string, hoursWindow: number = 48): Event | null {
+  const cutoff = Math.floor(Date.now() / 1000) - hoursWindow * 60 * 60;
+  const normalizedTitle = title.trim().toLowerCase();
+  
+  // Exact title match (case-insensitive)
+  const exactMatch = getDb().prepare(`
+    SELECT * FROM events
+    WHERE LOWER(TRIM(title)) = ? AND created_at > ? AND status NOT IN ('completed', 'expired')
+    LIMIT 1
+  `).get(normalizedTitle, cutoff) as Event | undefined;
+  
+  if (exactMatch) return exactMatch;
+  
+  // Fuzzy match: check if the new title is contained in an existing title or vice versa
+  // This catches cases like "Try cashews at Zantyes" vs "Try cashews at Zantye's"
+  const recentEvents = getDb().prepare(`
+    SELECT * FROM events
+    WHERE created_at > ? AND status NOT IN ('completed', 'expired')
+    ORDER BY created_at DESC
+    LIMIT 100
+  `).all(cutoff) as Event[];
+  
+  for (const existing of recentEvents) {
+    const existingTitle = existing.title.trim().toLowerCase();
+    // One title contains the other (handles slight variations)
+    if (existingTitle.includes(normalizedTitle) || normalizedTitle.includes(existingTitle)) {
+      return existing;
+    }
+    // Remove apostrophes/special chars and compare
+    const cleanExisting = existingTitle.replace(/[''`\-]/g, '');
+    const cleanNew = normalizedTitle.replace(/[''`\-]/g, '');
+    if (cleanExisting === cleanNew) {
+      return existing;
+    }
+  }
+  
+  return null;
+}
+
 export function insertEvent(event: Omit<Event, 'id' | 'created_at'>): number {
   const stmt = getDb().prepare(`
     INSERT INTO events (message_id, event_type, title, description, event_time, location, participants, keywords, confidence, status, context_url, sender_name)

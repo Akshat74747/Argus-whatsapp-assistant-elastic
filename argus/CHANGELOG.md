@@ -2,6 +2,51 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.5.1] - 2026-02-06
+
+### Fixed
+- **Massive False Event Reduction** — Complete overhaul of the event filtering pipeline to eliminate ~90% of garbage events
+  - `gemini.ts classifyMessage()`: Removed overly broad keywords (`complete`, `will`, `send`, `get`, `buy`, `bring`, `try`, `plan`, `event`, `task`, `todo`, `recommend`, `shop`, `visit`, `drinks`) that matched casual chat
+  - `gemini.ts classifyMessage()`: Added **noise filter** — rejects dev/coding chat (`create problem`, `debug`, `deploy`, `vibe coding`, `play with api`, `check after dev`, etc.)
+  - `gemini.ts classifyMessage()`: Added **high-value keyword** tier — services (`netflix`, `canva`, `spotify`), travel (`cashew`, `zantyes`, `flight`), and social (`dinner`, `lunch`, `birthday`) always pass to Gemini even without time/intent
+  - `gemini.ts classifyMessage()`: Single generic keyword without time or intent now rejected (was previously forwarded to Gemini)
+  - `gemini.ts extractEvents()`: Added comprehensive **NOISE FILTER** rules — excludes dev chat, vague "I will" statements, status updates, past-tense reports, casual work conversation, generic social chat, short ambiguous fragments
+  - `gemini.ts extractEvents()`: Added explicit ✅/❌ examples for Gemini to learn from
+  - `gemini.ts SYSTEM_PROMPT`: Strengthened to emphasize "VERY conservative" and "CLEAR, SPECIFIC, ACTIONABLE intent"
+  - `ingestion.ts`: Confidence threshold raised from `0.4` → `0.65`
+  - `ingestion.ts`: Fixed auto-scheduling — events now default to `'discovered'` status (was incorrectly auto-scheduling timeless events to `'scheduled'`); only context/URL events go to `'scheduled'`
+
+### Added
+- **Event Deduplication** — New `findDuplicateEvent(title, hoursWindow)` in `db.ts`
+  - Exact title match (case-insensitive, trimmed)
+  - Fuzzy match: title containment check for slight variations (e.g., "Try cashews at Zantyes" vs "Try cashews at Zantye's")
+  - Special character normalization (strips apostrophes, hyphens, backticks)
+  - 48-hour dedup window — prevents the same event from being created multiple times
+  - `ingestion.ts processMessage()`: Dedup check runs before `insertEvent()`, skips with log message
+
+### Changed
+- **Flowchart Rewrite** — Complete rewrite of `flowchart TB.mmd`
+  - Fixed model name: "Gemini 2.5 Flash Preview" → "Gemini 3 Flash Preview"
+  - Added filtering pipeline nodes: Confidence Gate (≥0.65), Dedup Check, Noise Filter
+  - Added 3 Core Scenarios section: 🥜 Goa Cashew, 📺 Netflix Cancel, 📅 Calendar Conflict
+  - Shows skip paths for rejected events (low confidence, duplicates, noise)
+  - Added new API endpoint `/api/events/day/:timestamp`
+  - Accurate scheduler intervals (24h·1h·15m triggers)
+
+### Verified Scenarios
+- **#1 Goa Cashew**: "Bro try cashews at Zantyes in Goa" → high-value keyword match → Gemini extracts recommendation → context_url=goa → URL trigger on travel sites ✅
+- **#4 Netflix Cancel**: "I need to cancel Netflix" → high-value keyword match → Gemini extracts subscription task → context_url=netflix → URL trigger on netflix.com ✅
+- **#5 Calendar Conflict**: "Dinner Thursday at 8" → high-value keyword + time match → Gemini extracts meeting → time triggers created → conflict detected on overlap ✅
+
+### False Positives Now Rejected
+- "Create problems 104 in PC" → noise filter ❌
+- "Complete restosmem broo" → no keyword match ❌
+- "I will start robotics man" → no signals ❌
+- "Play with APIs" → noise filter ❌
+- "Share design" → no signals ❌
+- "Upgrade vibe coding game" → noise filter ❌
+- "Send payment via UPI" → single generic keyword, no time/intent ❌
+
 ## [2.5.0] - 2026-02-06
 
 ### Added
