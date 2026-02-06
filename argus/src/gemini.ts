@@ -248,8 +248,60 @@ ONLY extract events that have CLEAR, SPECIFIC, ACTIONABLE intent:
       events: parsed.events || [],
     };
   } catch {
+    // Try to repair truncated JSON before giving up
+    const repaired = repairJSON(response);
+    if (repaired && repaired.events) {
+      console.warn('⚠️ Repaired truncated Gemini JSON — recovered', repaired.events.length, 'event(s)');
+      return { events: repaired.events };
+    }
     console.error('Failed to parse Gemini response:', response);
     return { events: [] };
+  }
+}
+
+// ============ TRUNCATED JSON REPAIR ============
+// Gemini sometimes returns cut-off JSON (token limit / network).
+// Try to close open brackets, braces, and strings so JSON.parse succeeds.
+function repairJSON(raw: string): any | null {
+  let s = raw.trim();
+  if (!s) return null;
+
+  // Strip markdown fences if present
+  s = s.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+
+  // Fast path
+  try { return JSON.parse(s); } catch { /* continue */ }
+
+  // Close open strings — find last unescaped quote
+  const quoteCount = (s.match(/(?<!\\)"/g) || []).length;
+  if (quoteCount % 2 !== 0) s += '"';
+
+  // Attempt to close any truncated value (null is a safe neutral)
+  // e.g. "event_time": "2026-02-07T15  →  "event_time": "2026-02-07T15"
+  // After closing the string, we still need to close arrays/objects.
+  // Strategy: count open/close for [] and {} and append closers.
+  const opens  = { '{': 0, '[': 0 };
+  const closes: Record<string, '{' | '['> = { '}': '{', ']': '[' };
+  let inString = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '"' && (i === 0 || s[i - 1] !== '\\')) { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{' || c === '[') opens[c]++;
+    if (c === '}' || c === ']') opens[closes[c]]--;
+  }
+
+  // Remove trailing comma before we close (invalid JSON)
+  s = s.replace(/,\s*$/, '');
+
+  // Append missing closers in reverse order (] before })
+  for (let i = 0; i < opens['[']; i++) s += ']';
+  for (let i = 0; i < opens['{']; i++) s += '}';
+
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
 }
 
@@ -269,7 +321,7 @@ async function callGemini(prompt: string, jsonMode = true): Promise<string> {
         { role: 'user', content: prompt },
       ],
       temperature: 0.1,
-      max_tokens: 2000,
+      max_tokens: 4096,
       ...(jsonMode && { response_format: { type: 'json_object' } }),
     }),
   });
@@ -371,6 +423,22 @@ If it's a new event/task/recommendation (NOT an action), return: {"isAction": fa
       confidence: parsed.confidence || 0,
     };
   } catch {
+    const repaired = repairJSON(response);
+    if (repaired && repaired.action) {
+      console.warn('⚠️ Repaired truncated action JSON');
+      return {
+        isAction: repaired.isAction || false,
+        action: repaired.action || 'none',
+        targetKeywords: repaired.targetKeywords || [],
+        targetDescription: repaired.targetDescription || '',
+        snoozeMinutes: repaired.snoozeMinutes || undefined,
+        newTime: repaired.newTime || undefined,
+        newTitle: repaired.newTitle || undefined,
+        newLocation: repaired.newLocation || undefined,
+        newDescription: repaired.newDescription || undefined,
+        confidence: repaired.confidence || 0,
+      };
+    }
     console.error('Failed to parse action detection response:', response);
     return { isAction: false, action: 'none', targetKeywords: [], targetDescription: '', confidence: 0 };
   }
@@ -423,6 +491,11 @@ Rules:
       confidence: parsed.confidence || 0,
     };
   } catch {
+    const repaired = repairJSON(response);
+    if (repaired && repaired.relevant) {
+      console.warn('⚠️ Repaired truncated validation JSON');
+      return { relevant: repaired.relevant, confidence: repaired.confidence || 0 };
+    }
     console.error('Failed to parse validation response:', response);
     return { relevant: [], confidence: 0 };
   }
@@ -500,7 +573,11 @@ Return JSON:
       relevantEventIds: parsed.relevantEventIds || [],
     };
   } catch {
-    // If JSON parse fails, try to extract text response
+    const repaired = repairJSON(response);
+    if (repaired && repaired.response) {
+      console.warn('⚠️ Repaired truncated chat JSON');
+      return { response: repaired.response, relevantEventIds: repaired.relevantEventIds || [] };
+    }
     console.error('Failed to parse chat response:', response);
     return {
       response: response || 'Sorry, something went wrong.',
