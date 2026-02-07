@@ -2,6 +2,40 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [2.6.5] - 2026-02-07
+
+### Added — "Insurance Accuracy" Scenario (Form Mismatch Detection)
+
+When a user fills in a car model on an insurance website (e.g. "Honda Civic 2022"), Argus reads the DOM, cross-references with WhatsApp chat memory, and shows a popup: "You actually own a Honda Civic 2018! You might wanna change that for a lower quote."
+
+### Added
+- **DOM Form Watcher** in `content.js`
+  - Detects insurance-like pages via keyword matching (acko, policybazaar, digit, etc.)
+  - Attaches `input` event listeners to all text fields with 1.5s debounce
+  - `MutationObserver` watches for dynamically added inputs
+  - `extractCarModel()` regex parser for make/model/year patterns
+  - Calls `/api/form-check` endpoint when car model is detected
+  - `formMismatchShown` flag prevents duplicate popups per page load
+
+- **`form_mismatch` Popup Type** in `content.js` `getModalConfig()`
+  - Icon: ⚠️, headerClass: conflict
+  - Title: "Hold on — that doesn't match!"
+  - Subtitle: "From your WhatsApp conversations"
+  - Buttons: "✏️ Fix It" (auto-fills correct value), "👍 It's Correct", "🚫 Dismiss"
+  - `fix-form-field` action handler highlights input green and fills remembered value
+
+- **`POST /api/form-check`** endpoint in `server.ts`
+  - Accepts: `{ fieldValue, fieldType, url, parsed: { make, model, year } }`
+  - Demo hardcoded: Honda Civic → remembered as 2018, any other year triggers mismatch
+  - DB fallback: searches events (FTS5) + raw messages for vehicle year mismatches
+  - Returns: `{ mismatch, entered, remembered, suggestion }`
+
+- **`searchEventsByKeywords`** imported into `server.ts` for vehicle data search
+
+### Changed
+- Content script version: v2.6.3 → v2.6.5
+- RULES.md: Added server rule (never restart), updated popup types (8), added /api/form-check, updated DOM reading constraint
+
 ## [2.6.4] - 2026-02-07
 
 ### Added — "Gift Intent" Scenario (E-commerce URL Triggers)

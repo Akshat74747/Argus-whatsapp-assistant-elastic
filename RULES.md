@@ -57,12 +57,17 @@ convert -background none icon.svg -resize 128x128 icon128.png
 # 3. Load unpacked → select argus/extension/
 ```
 
+## Server
+- NEVER restart, run, or kill the server — it is already running and auto-restarts on rebuild
+- Only run `npx tsc` to rebuild; the server picks up changes automatically
+- Do NOT use `node dist/server.js`, `npm run dev`, `kill`, or any server start/stop commands
+
 ## Architecture Constraints
 - SQLite + FTS5 ONLY (no FAISS, no vectors)
 - Gemini 3 Flash Preview (no OpenAI for LLM)
 - 90-day hot window for context
 - Single container per user
-- URL detection only (no DOM reading)
+- URL detection + DOM form watching (insurance accuracy scenario)
 
 ## Testing Strategy
 - Vitest with single fork (fast)
@@ -95,13 +100,14 @@ postgres:16-alpine          # Evolution DB
 | /api/events/day/:timestamp | GET | Get all events for a day (reschedule view) |
 | /api/webhook/whatsapp | POST | WhatsApp webhook |
 | /api/context-check | POST | Check URL context |
+| /api/form-check | POST | Check form field mismatch (insurance accuracy) |
 | /api/chat | POST | AI Chat - context-aware conversation |
 | /ws | WS | Real-time notifications |
 
 ## Chrome Extension Components
 - **manifest.json** - Manifest V3, sidePanel permission, no `"type": "module"` in background
 - **background.js** - Service worker: WebSocket, API calls, sidePanel handler
-- **content.js** - Dynamic popups overlay (7 types: discovery, reminder, context, conflict, insight, snooze, update_confirm), toast notifications
+- **content.js** - Dynamic popups overlay (8 types: discovery, reminder, context, conflict, insight, snooze, update_confirm, form_mismatch), toast notifications, DOM form watcher for insurance accuracy
 - **sidepanel.html/js** - AI Chat sidebar with markdown rendering
 - **popup.html/js** - Extension popup with event cards and stats
 

@@ -346,6 +346,7 @@
   let currentModal = null;
   let toastContainer = null;
   const shownEventIds = new Set();
+  let argusFormWatcherTarget = null; // Tracks the input field that triggered a form mismatch
 
   // ============ MODAL CONFIGURATION ============
   // Dynamic - uses event data to build human-readable messages
@@ -468,6 +469,24 @@
             { text: '✅ Yes, Update', action: 'confirm-update', style: 'primary' },
             { text: '⏭️ Skip', action: 'dismiss', style: 'secondary' },
             { text: '🚫 Ignore', action: 'ignore', style: 'outline' },
+          ]
+        };
+      }
+
+      case 'form_mismatch': {
+        const remembered = extraData.remembered || 'a different value';
+        const entered = extraData.entered || 'what you typed';
+        const suggestion = extraData.suggestion || 'Double-check before proceeding — you might get a better deal!';
+        return {
+          icon: '⚠️',
+          headerClass: 'conflict',
+          title: 'Hold on — that doesn\'t match!',
+          subtitle: 'From your WhatsApp conversations',
+          question: suggestion,
+          buttons: [
+            { text: '✏️ Fix It', action: 'fix-form-field', style: 'primary' },
+            { text: '👍 It\'s Correct', action: 'dismiss', style: 'secondary' },
+            { text: '🚫 Dismiss', action: 'dismiss', style: 'outline' },
           ]
         };
       }
@@ -811,6 +830,21 @@
           showToast('❌ Error', 'Could not reach server.');
         });
         break;
+
+      case 'fix-form-field':
+        console.log(`[Argus] ✏️ User wants to fix form field, remembered: ${extraData.remembered}`);
+        // Find the input field on the page and fill it with the remembered value
+        if (extraData.remembered && argusFormWatcherTarget) {
+          argusFormWatcherTarget.value = extraData.remembered;
+          argusFormWatcherTarget.dispatchEvent(new Event('input', { bubbles: true }));
+          argusFormWatcherTarget.focus();
+          argusFormWatcherTarget.style.outline = '3px solid #22c55e';
+          setTimeout(function() { argusFormWatcherTarget.style.outline = ''; }, 2000);
+          showToast('✏️ Fixed!', 'Updated to: ' + extraData.remembered);
+        } else {
+          showToast('✏️ Fix it manually', 'Change the value to: ' + (extraData.remembered || 'the correct one'));
+        }
+        break;
     }
 
     closeModal();
@@ -916,6 +950,142 @@
     return div.innerHTML;
   }
 
+  // ============ INSURANCE FORM MISMATCH (DOM WATCHER) ============
+  // Watches input fields on insurance-like pages for car model entries
+  // Cross-references with WhatsApp memory to detect mismatches
+  const FORM_CHECK_DEBOUNCE = 1500; // ms after user stops typing
+  let formCheckTimer = null;
+  let formMismatchShown = false; // Only show once per page load
+
+  function isInsuranceLikePage() {
+    const url = window.location.href.toLowerCase();
+    const title = document.title.toLowerCase();
+    const bodyText = (document.body?.innerText || '').substring(0, 3000).toLowerCase();
+
+    const insuranceKeywords = ['insurance', 'insure', 'acko', 'policybazaar', 'digit', 'hdfc ergo', 'icici lombard', 'bajaj allianz', 'car quote', 'vehicle quote', 'renew policy', 'car model', 'get quote'];
+
+    // Also check input placeholders for car-related hints
+    const inputs = document.querySelectorAll('input');
+    let hasCarInput = false;
+    inputs.forEach(function(inp) {
+      const ph = (inp.placeholder || '').toLowerCase();
+      if (ph.includes('car') || ph.includes('vehicle') || ph.includes('model')) hasCarInput = true;
+    });
+
+    return hasCarInput || insuranceKeywords.some(kw => url.includes(kw) || title.includes(kw) || bodyText.includes(kw));
+  }
+
+  function extractCarModel(text) {
+    if (!text || text.length < 3) return null;
+    // Match patterns like "Honda Civic 2022", "Maruti Swift 2020", "Hyundai i20 2019"
+    const carPattern = /\b(honda|toyota|maruti|suzuki|hyundai|tata|mahindra|kia|mg|skoda|volkswagen|bmw|audi|mercedes|ford|chevrolet|renault|nissan|fiat|jeep)\s+([a-z0-9]+(?:\s+[a-z0-9]+)?)\s*(20[0-9]{2})?\b/i;
+    const match = text.match(carPattern);
+    if (match) {
+      return {
+        make: match[1].trim(),
+        model: match[2].trim(),
+        year: match[3] || null,
+        full: text.trim(),
+      };
+    }
+    return null;
+  }
+
+  function checkFormFieldForMismatch(inputEl) {
+    if (formMismatchShown) return;
+    const value = inputEl.value.trim();
+    if (!value || value.length < 5) return;
+
+    const carInfo = extractCarModel(value);
+    if (!carInfo) return;
+
+    console.log('[Argus] 🚗 Detected car model in form:', carInfo);
+    argusFormWatcherTarget = inputEl;
+
+    // Call server to check for mismatch
+    fetch('http://localhost:3000/api/form-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fieldValue: value,
+        fieldType: 'car_model',
+        url: window.location.href,
+        parsed: carInfo,
+      }),
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      if (data.mismatch && !formMismatchShown) {
+        formMismatchShown = true;
+        console.log('[Argus] ⚠️ Form mismatch detected!', data);
+        showModal(
+          {
+            id: 'form-mismatch-' + Date.now(),
+            title: data.entered + ' → should be ' + data.remembered,
+            description: data.suggestion,
+            event_type: 'form_check',
+          },
+          'form_mismatch',
+          {
+            remembered: data.remembered,
+            entered: data.entered,
+            suggestion: data.suggestion,
+          }
+        );
+      }
+    })
+    .catch(function(err) {
+      console.error('[Argus] Form check error:', err);
+    });
+  }
+
+  function attachFormWatchers() {
+    if (!isInsuranceLikePage()) return;
+    console.log('[Argus] 🏥 Insurance-like page detected, attaching form watchers');
+
+    // Watch all text inputs on the page
+    const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+    inputs.forEach(function(input) {
+      if (input.dataset.argusWatching) return;
+      input.dataset.argusWatching = 'true';
+
+      input.addEventListener('input', function() {
+        clearTimeout(formCheckTimer);
+        formCheckTimer = setTimeout(function() {
+          checkFormFieldForMismatch(input);
+        }, FORM_CHECK_DEBOUNCE);
+      });
+    });
+
+    // Also watch for dynamically added inputs
+    const observer = new MutationObserver(function(mutations) {
+      mutations.forEach(function(mutation) {
+        mutation.addedNodes.forEach(function(node) {
+          if (node.nodeType !== 1) return;
+          const newInputs = node.querySelectorAll ? node.querySelectorAll('input[type="text"], input:not([type])') : [];
+          newInputs.forEach(function(input) {
+            if (input.dataset.argusWatching) return;
+            input.dataset.argusWatching = 'true';
+            input.addEventListener('input', function() {
+              clearTimeout(formCheckTimer);
+              formCheckTimer = setTimeout(function() {
+                checkFormFieldForMismatch(input);
+              }, FORM_CHECK_DEBOUNCE);
+            });
+          });
+        });
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Attach watchers after DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attachFormWatchers);
+  } else {
+    attachFormWatchers();
+  }
+
   // ============ MESSAGE HANDLERS ============
   chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     console.log(`[Argus] 📬 Content script received: ${message.type}`);
@@ -961,6 +1131,25 @@
         sendResponse({ received: true });
         break;
 
+      case 'ARGUS_FORM_MISMATCH':
+        console.log(`[Argus] ⚠️ Form mismatch from server: entered="${message.entered}", remembered="${message.remembered}"`);
+        showModal(
+          {
+            id: 'form-mismatch-' + Date.now(),
+            title: message.entered + ' → should be ' + message.remembered,
+            description: message.suggestion,
+            event_type: 'form_check',
+          },
+          'form_mismatch',
+          {
+            remembered: message.remembered,
+            entered: message.entered,
+            suggestion: message.suggestion,
+          }
+        );
+        sendResponse({ received: true });
+        break;
+
       case 'ARGUS_ACTION_TOAST':
         console.log(`[Argus] 🎯 Action toast: "${message.action}" on "${message.eventTitle}"`);
         const actionEmoji = message.action === 'cancel' || message.action === 'delete' ? '🗑️' :
@@ -980,5 +1169,5 @@
     return true;
   });
 
-  console.log('[Argus] Content Script v2.6.3 loaded — update confirmations');
+  console.log('[Argus] Content Script v2.6.5 loaded — insurance form mismatch detection');
 })();
