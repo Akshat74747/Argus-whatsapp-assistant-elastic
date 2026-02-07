@@ -6,7 +6,7 @@ import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent, getEventsForDay, updateEvent } from './db.js';
+import { initDb, getStats, getEventById, closeDb, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent, getEventsForDay, updateEvent, searchEventsByKeywords } from './db.js';
 import { initGemini, chatWithContext, generatePopupBlueprint } from './gemini.js';
 import { processWebhook } from './ingestion.js';
 import { matchContext, extractContextFromUrl } from './matcher.js';
@@ -723,6 +723,93 @@ app.post('/api/extract-context', (req: Request, res: Response) => {
     res.json(context);
   } catch (_error) {
     res.status(500).json({ error: 'Failed to extract context' });
+  }
+});
+
+// Form field mismatch check (Insurance Accuracy scenario)
+// Checks if user-entered car model matches WhatsApp chat memory
+app.post('/api/form-check', (req: Request, res: Response) => {
+  try {
+    const { fieldValue, fieldType, parsed } = req.body;
+    if (!fieldValue) {
+      res.status(400).json({ error: 'fieldValue required' });
+      return;
+    }
+
+    console.log(`[Argus] 🔍 Form check: "${fieldValue}" (type: ${fieldType})`);
+
+    // Try to find vehicle mentions in stored events/messages
+    let remembered: string | null = null;
+
+    if (fieldType === 'car_model' && parsed) {
+      const make = (parsed.make || '').toLowerCase();
+      const model = (parsed.model || '').toLowerCase();
+      const enteredYear = parsed.year || null;
+
+      // ── DEMO HARDCODED FALLBACK (checked FIRST for reliable demo) ──
+      // Client said: "just hardcode it lmao, bas demo ke liye dikh jaye"
+      // Honda Civic → the "remembered" car is always 2018
+      // If user enters 2018 → no mismatch. Any other year → mismatch.
+      if (make === 'honda' && model === 'civic') {
+        if (enteredYear && enteredYear !== '2018') {
+          remembered = 'Honda Civic 2018';
+          console.log('[Argus] 🎯 Demo hardcoded: Honda Civic 2018');
+        }
+        // Skip DB search for Honda Civic — hardcoded owns this case
+      } else {
+        // For all other cars, search DB for real vehicle data
+        const keywords = [make, model].filter(Boolean);
+        if (keywords.length > 0) {
+          const events = searchEventsByKeywords(keywords, 365, 20);
+          for (const ev of events) {
+            const text = `${ev.title} ${ev.description || ''} ${ev.keywords || ''}`.toLowerCase();
+            // Look for a different year for the same make+model
+            const yearMatch = text.match(/\b(20[0-9]{2})\b/);
+            if (yearMatch && enteredYear && yearMatch[1] !== enteredYear) {
+              const capitalMake = make.charAt(0).toUpperCase() + make.slice(1);
+              const capitalModel = model.charAt(0).toUpperCase() + model.slice(1);
+              remembered = `${capitalMake} ${capitalModel} ${yearMatch[1]}`;
+              break;
+            }
+          }
+
+          // Also search raw messages
+          if (!remembered) {
+            const allMessages = getAllMessages({ limit: 200 });
+            for (const msg of allMessages) {
+              const text = (msg.content || '').toLowerCase();
+              if (text.includes(make) && text.includes(model)) {
+                const yearMatch = text.match(/\b(20[0-9]{2})\b/);
+                if (yearMatch && enteredYear && yearMatch[1] !== enteredYear) {
+                  const capitalMake = make.charAt(0).toUpperCase() + make.slice(1);
+                  const capitalModel = model.charAt(0).toUpperCase() + model.slice(1);
+                  remembered = `${capitalMake} ${capitalModel} ${yearMatch[1]}`;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (remembered) {
+        const entered = `${(parsed.make || '').charAt(0).toUpperCase() + (parsed.make || '').slice(1)} ${(parsed.model || '').charAt(0).toUpperCase() + (parsed.model || '').slice(1)} ${enteredYear || ''}`.trim();
+        console.log(`[Argus] ⚠️ Form mismatch! Entered: "${entered}", Remembered: "${remembered}"`);
+        res.json({
+          mismatch: true,
+          entered,
+          remembered,
+          suggestion: `You mentioned owning a ${remembered} in your WhatsApp chats. This quote is for a ${entered} — you might be overpaying! Consider changing it for a lower premium.`,
+        });
+        return;
+      }
+    }
+
+    // No mismatch found
+    res.json({ mismatch: false });
+  } catch (error) {
+    console.error('Form check error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
