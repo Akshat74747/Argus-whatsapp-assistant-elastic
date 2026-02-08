@@ -41,4 +41,11 @@ coverage/
 tmp/
 temp/
 *.tmp
-quicksave/
+
+# Evolution API (keep source, exclude heavy stuff)
+evolution-api/node_modules/
+evolution-api/dist/
+evolution-api/.env
+evolution-api/instances/
+evolution-api/store/
+evolution-api/.DS_Store
