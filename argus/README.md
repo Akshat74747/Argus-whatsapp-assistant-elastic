@@ -1,4 +1,4 @@
-# Argus — Proactive Memory Assistant v2.6.5
+# Argus — Proactive Memory Assistant v2.7.0
 
 AI-powered WhatsApp assistant that learns from your conversations, detects events, and reminds you at the right moment — while you browse.
 
@@ -7,11 +7,14 @@ AI-powered WhatsApp assistant that learns from your conversations, detects event
 ### Docker (Recommended — works on Linux / Windows / macOS)
 
 ```bash
-cd argus
+git clone https://github.com/nityam2007/argus-whatsapp-assistant.git
+cd argus-whatsapp-assistant/argus
 cp .env.example .env          # Fill in GEMINI_API_KEY
-docker compose up -d           # Starts 4 containers
+docker compose up -d           # Starts 4 containers (builds everything from source)
 docker compose logs -f argus   # View Argus logs
 ```
+
+> **Everything is included** — Evolution API source, QuickSave, and Argus are all in this repo. No extra downloads needed.
 
 ### Local Development
 
@@ -62,28 +65,37 @@ docker compose ps                  # Status
 ## 📁 Project Structure
 
 ```
-argus/
-├── src/
-│   ├── server.ts        # Express + WebSocket server
-│   ├── db.ts            # SQLite + FTS5 database
-│   ├── gemini.ts        # Gemini AI — extraction, popup blueprints, chat
-│   ├── ingestion.ts     # WhatsApp message processing pipeline
-│   ├── matcher.ts       # URL pattern matching for context triggers
-│   ├── scheduler.ts     # Time-based reminders + snooze
-│   ├── evolution-db.ts  # Direct PostgreSQL read for message history
-│   └── types.ts         # Zod schemas + config parser
-├── extension/           # Chrome Extension (Manifest V3)
-│   ├── manifest.json    # <all_urls> content scripts
-│   ├── background.js    # WebSocket, API calls, context checks
-│   ├── content.js       # Popup overlays (8 types), DOM form watcher
-│   ├── sidepanel.html/js # AI Chat sidebar
-│   ├── popup.html/js    # Extension popup with stats
-│   └── icons/           # Extension icons
-├── tests/               # Vitest tests
-├── data/                # SQLite database (auto-created)
-├── Dockerfile           # Multi-stage Node 22 Alpine
-├── docker-compose.yml   # Full stack (4 containers)
-└── .env.example         # Environment template
+argus-whatsapp-assistant/           # ← Clone this repo
+├── argus/                          # Main application
+│   ├── src/
+│   │   ├── server.ts               # Express + WebSocket server
+│   │   ├── db.ts                   # SQLite + FTS5 database
+│   │   ├── gemini.ts               # Gemini AI — extraction, popup blueprints, chat
+│   │   ├── ingestion.ts            # WhatsApp message processing pipeline
+│   │   ├── quicksave.ts            # QuickSave CEP v9.1 — context compression
+│   │   ├── matcher.ts              # URL pattern matching for context triggers
+│   │   ├── scheduler.ts            # Time-based reminders + snooze
+│   │   ├── evolution-db.ts         # Direct PostgreSQL read for message history
+│   │   └── types.ts                # Zod schemas + config parser
+│   ├── extension/                  # Chrome Extension (Manifest V3)
+│   │   ├── manifest.json           # <all_urls> content scripts
+│   │   ├── background.js           # WebSocket, API calls, context checks
+│   │   ├── content.js              # Popup overlays (8 types), DOM form watcher
+│   │   ├── sidepanel.html/js       # AI Chat sidebar
+│   │   ├── popup.html/js           # Extension popup with stats
+│   │   └── icons/                  # Extension icons
+│   ├── tests/                      # Vitest tests
+│   ├── Dockerfile                  # Multi-stage Node 22 Alpine
+│   ├── docker-compose.yml          # Full stack (4 containers)
+│   └── .env.example                # Environment template
+├── evolution-api/                  # WhatsApp Bridge (included, builds from source)
+│   ├── src/                        # Evolution API v2.3.7 source
+│   ├── Dockerfile                  # Node 24 Alpine build
+│   ├── prisma/                     # Database schema
+│   └── docker-compose.yaml         # (Not used — we use argus/docker-compose.yml)
+└── quicksave/                      # QuickSave CEP v9.1 (reference spec)
+    ├── SKILL.md                    # Full protocol specification
+    └── references/                 # PDL, S2A, NCL, expert docs
 ```
 
 ## 🔧 Development Commands
