@@ -160,6 +160,7 @@ export const ConfigSchema = z.object({
     database: z.string(),
     user: z.string(),
     password: z.string(),
+    schema: z.string().optional(),
   }).optional(),
   processOwnMessages: z.boolean().default(true),
   skipGroupMessages: z.boolean().default(false),
@@ -175,6 +176,7 @@ export function parseConfig(): Config {
     database: process.env.EVOLUTION_PG_DATABASE || 'evolution',
     user: process.env.EVOLUTION_PG_USER || 'postgres',
     password: process.env.EVOLUTION_PG_PASSWORD || 'postgres',
+    schema: process.env.EVOLUTION_PG_SCHEMA || 'evolution_api',
   } : undefined;
 
   return ConfigSchema.parse({

@@ -12,6 +12,7 @@ interface EvolutionConfig {
   database: string;
   user: string;
   password: string;
+  schema?: string;
 }
 
 interface EvolutionContact {
@@ -36,8 +37,11 @@ interface MessageWithContact {
 
 let pool: pg.Pool | null = null;
 let cachedInstanceId: string | null = null;
+let tablesVerified = false;
+let tablesExist = false;
 
 export function initEvolutionDb(config: EvolutionConfig): void {
+  const schema = config.schema || 'evolution_api';
   pool = new Pool({
     host: config.host,
     port: config.port,
@@ -47,13 +51,51 @@ export function initEvolutionDb(config: EvolutionConfig): void {
     max: 10,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
+    // Set search_path so Prisma-created tables in the evolution_api schema are found
+    options: `-c search_path=${schema},public`,
   });
 
   pool.on('error', (err) => {
     console.error('Evolution DB pool error:', err);
   });
 
-  console.log('✅ Evolution PostgreSQL pool initialized');
+  console.log(`✅ Evolution PostgreSQL pool initialized (schema: ${schema})`);
+}
+
+/**
+ * One-time check: do the Evolution tables exist?
+ * If not, log a single warning and skip all future queries.
+ */
+async function ensureTablesExist(): Promise<boolean> {
+  if (tablesVerified) return tablesExist;
+  if (!pool) return false;
+
+  try {
+    const result = await pool.query(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = current_schema()
+        AND table_name IN ('Instance', 'Message', 'Chat', 'Contact')
+    `);
+    const found = result.rows.map((r: { table_name: string }) => r.table_name);
+    tablesExist = found.length >= 2;
+    tablesVerified = true;
+
+    if (!tablesExist) {
+      console.warn(
+        `⚠️ Evolution DB tables not found (found: [${found.join(', ')}]). ` +
+        `Evolution API may not have run its migrations yet. ` +
+        `Skipping direct PG reads — webhook ingestion still works.`
+      );
+    } else {
+      console.log(`✅ Evolution DB tables verified: ${found.join(', ')}`);
+    }
+    return tablesExist;
+  } catch (err) {
+    tablesVerified = true;
+    tablesExist = false;
+    console.warn('⚠️ Could not verify Evolution DB tables — skipping direct PG reads');
+    return false;
+  }
 }
 
 /**
@@ -62,6 +104,7 @@ export function initEvolutionDb(config: EvolutionConfig): void {
 export async function getInstanceIdByName(instanceName: string): Promise<string | null> {
   if (cachedInstanceId) return cachedInstanceId;
   if (!pool) return null;
+  if (!(await ensureTablesExist())) return null;
   
   try {
     const result = await pool.query(
@@ -92,6 +135,7 @@ export async function testEvolutionConnection(): Promise<boolean> {
 
 export async function getEvolutionInstances(): Promise<{ id: string; name: string; status: string; ownerJid: string }[]> {
   if (!pool) return [];
+  if (!(await ensureTablesExist())) return [];
   try {
     const result = await pool.query(`
       SELECT id, name, "connectionStatus" as status, "ownerJid"
@@ -119,6 +163,7 @@ export async function getEvolutionMessages(options: {
   search?: string;
 }): Promise<MessageWithContact[]> {
   if (!pool) return [];
+  if (!(await ensureTablesExist())) return [];
 
   const { limit = 50, offset = 0, fromMe, isGroup, search, instanceId } = options;
 
@@ -190,6 +235,7 @@ export async function getEvolutionMessages(options: {
  */
 export async function getEvolutionMessageCount(instanceId?: string): Promise<number> {
   if (!pool) return 0;
+  if (!(await ensureTablesExist())) return 0;
   try {
     let query = 'SELECT COUNT(*) as count FROM "Message"';
     const params: string[] = [];
@@ -212,6 +258,7 @@ export async function getEvolutionMessageCount(instanceId?: string): Promise<num
  */
 export async function getEvolutionContacts(instanceId?: string, limit = 100): Promise<EvolutionContact[]> {
   if (!pool) return [];
+  if (!(await ensureTablesExist())) return [];
   try {
     let query = `
       SELECT id, "remoteJid", "pushName", "profilePicUrl"
@@ -246,6 +293,7 @@ export async function getEvolutionChats(instanceId?: string, limit = 50): Promis
   lastMessageAt: Date | null;
 }[]> {
   if (!pool) return [];
+  if (!(await ensureTablesExist())) return [];
   try {
     let query = `
       SELECT 
@@ -279,6 +327,7 @@ export async function getEvolutionChats(instanceId?: string, limit = 50): Promis
  */
 export async function searchEvolutionMessages(query: string, limit = 20): Promise<MessageWithContact[]> {
   if (!pool) return [];
+  if (!(await ensureTablesExist())) return [];
   try {
     const result = await pool.query(`
       SELECT 
@@ -325,6 +374,7 @@ export async function getEvolutionStats(instanceId?: string): Promise<{
   chats: number;
 }> {
   if (!pool) return { totalMessages: 0, sentMessages: 0, receivedMessages: 0, contacts: 0, chats: 0 };
+  if (!(await ensureTablesExist())) return { totalMessages: 0, sentMessages: 0, receivedMessages: 0, contacts: 0, chats: 0 };
 
   try {
     const whereClause = instanceId ? `WHERE "instanceId" = $1` : '';
