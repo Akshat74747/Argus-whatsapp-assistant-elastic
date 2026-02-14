@@ -21,6 +21,7 @@
     "prepare": "mkdir -p data logs"
   },
   "dependencies": {
+    "@elastic/elasticsearch": "^9.3.1",
     "better-sqlite3": "^11.7.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",

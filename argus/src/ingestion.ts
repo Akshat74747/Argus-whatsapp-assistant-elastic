@@ -1,4 +1,4 @@
-import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEvent, findDuplicateEvent } from './db.js';
+import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEvent, findDuplicateEvent } from './elastic.js';
 import { extractEvents, shouldSkipMessage, detectAction } from './gemini.js';
 import type { Message, WhatsAppWebhook, TriggerType } from './types.js';
 
@@ -91,10 +91,10 @@ export async function processWebhook(
   };
 
   // Store message
-  insertMessage(message);
+  await insertMessage(message);
 
   // Update contact
-  upsertContact({
+  await upsertContact({
     id: message.sender,
     name: senderName,
     first_seen: timestamp,
@@ -109,13 +109,13 @@ export async function processWebhook(
   }
 
   // Get context from recent messages
-  const recentMessages = getRecentMessages(message.chat_id, 5);
+  const recentMessages = await getRecentMessages(message.chat_id, 5);
   const context = recentMessages
     .filter(m => m.id !== message.id)
     .map(m => m.content);
 
   // ============ STEP 1: Check if this is an ACTION on existing event ============
-  const activeEvents = getActiveEvents(20);
+  const activeEvents = await getActiveEvents(20);
   const actionResult = await detectAction(content, context, activeEvents.map(e => ({
     id: e.id!,
     title: e.title,
@@ -131,7 +131,7 @@ export async function processWebhook(
     
     // Try to find by keywords
     if (actionResult.targetKeywords.length > 0) {
-      const matches = findActiveEventsByKeywords(actionResult.targetKeywords);
+      const matches = await findActiveEventsByKeywords(actionResult.targetKeywords);
       if (matches.length > 0) {
         targetEvent = matches[0]; // Best match
       }
@@ -149,19 +149,19 @@ export async function processWebhook(
       switch (actionResult.action) {
         case 'cancel':
         case 'delete':
-          deleteEvent(eventId);
+          await deleteEvent(eventId);
           actionMessage = `Deleted: "${targetEvent.title}"`;
           console.log(`🗑️ [ACTION] Deleted event #${eventId}: "${targetEvent.title}"`);
           break;
 
         case 'complete':
-          dbCompleteEvent(eventId);
+          await dbCompleteEvent(eventId);
           actionMessage = `Completed: "${targetEvent.title}"`;
           console.log(`✅ [ACTION] Completed event #${eventId}: "${targetEvent.title}"`);
           break;
 
         case 'ignore':
-          ignoreEvent(eventId);
+          await ignoreEvent(eventId);
           actionMessage = `Ignored: "${targetEvent.title}" - won't remind again`;
           console.log(`🚫 [ACTION] Ignored event #${eventId}: "${targetEvent.title}"`);
           break;
@@ -169,7 +169,7 @@ export async function processWebhook(
         case 'snooze':
         case 'postpone':
           const minutes = actionResult.snoozeMinutes || 30;
-          snoozeEvent(eventId, minutes);
+          await snoozeEvent(eventId, minutes);
           const durationText = minutes >= 10080 ? 'next week' : minutes >= 1440 ? 'tomorrow' : minutes >= 60 ? `${Math.round(minutes / 60)} hours` : `${minutes} minutes`;
           actionMessage = `Snoozed: "${targetEvent.title}" → will remind ${durationText}`;
           console.log(`💤 [ACTION] Snoozed event #${eventId} for ${minutes} min: "${targetEvent.title}"`);
@@ -341,7 +341,7 @@ export async function processMessage(
         }
 
         if (Object.keys(updateFields).length > 0) {
-          const updated = updateEvent(targetEventId, updateFields);
+          const updated = await updateEvent(targetEventId, updateFields);
           if (updated) {
             const changedStr = Object.keys(updateFields).join(', ');
             console.log(`✅ [CRUD] Event #${targetEventId} updated: [${changedStr}]`);
@@ -366,7 +366,7 @@ export async function processMessage(
       }
 
       // Deduplication: skip if a similar event already exists in last 48 hours
-      const isDuplicate = findDuplicateEvent(event.title, 48);
+      const isDuplicate = await findDuplicateEvent(event.title, 48);
       if (isDuplicate) {
         console.log(`⏭️ Skipping duplicate event: "${event.title}" (matches existing #${isDuplicate.id}: "${isDuplicate.title}")`);
         continue;
@@ -495,7 +495,7 @@ export async function processMessage(
         context_url: contextUrl,
         sender_name: senderName,
       };
-      const eventId = insertEvent(eventData);
+      const eventId = await insertEvent(eventData);
       eventsCreated++;
       
       // Track for return
@@ -515,7 +515,7 @@ export async function processMessage(
 
       // Check for calendar conflicts
       if (eventTime) {
-        const conflicts = checkEventConflicts(eventTime, 60);
+        const conflicts = await checkEventConflicts(eventTime, 60);
         const otherConflicts = conflicts.filter(e => e.id !== eventId);
         if (otherConflicts.length > 0) {
           const lastEvent = createdEvents[createdEvents.length - 1];
@@ -540,7 +540,7 @@ export async function processMessage(
         for (const { type, offset } of intervals) {
           const triggerTime = eventTime - offset;
           if (triggerTime > now) {
-            insertTrigger({
+            await insertTrigger({
               event_id: eventId,
               trigger_type: type,
               trigger_value: new Date(triggerTime * 1000).toISOString(),
@@ -553,7 +553,7 @@ export async function processMessage(
 
       // Location/URL triggers
       if (event.location) {
-        insertTrigger({
+        await insertTrigger({
           event_id: eventId,
           trigger_type: 'url',
           trigger_value: event.location.toLowerCase(),
@@ -563,11 +563,11 @@ export async function processMessage(
       }
 
       // Keyword triggers (for important keywords)
-      const importantKeywords = event.keywords.filter(kw => 
+      const importantKeywords = event.keywords.filter(kw =>
         ['travel', 'flight', 'hotel', 'buy', 'gift', 'birthday', 'meeting', 'deadline', 'dinner', 'lunch', 'coffee'].some(ik => kw.toLowerCase().includes(ik))
       );
       for (const kw of importantKeywords.slice(0, 3)) {
-        insertTrigger({
+        await insertTrigger({
           event_id: eventId,
           trigger_type: 'keyword',
           trigger_value: kw.toLowerCase(),
@@ -602,7 +602,7 @@ export async function batchImportMessages(
       timestamp: msg.timestamp,
     };
 
-    insertMessage(message);
+    await insertMessage(message);
 
     // Trivial pre-filter only — Gemini decides the rest
     if (!shouldSkipMessage(msg.content)) {

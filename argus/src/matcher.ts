@@ -1,4 +1,4 @@
-import { searchEventsByKeywords, searchEventsByLocation } from './db.js';
+import { searchEventsByKeywords, searchEventsByLocation } from './elastic.js';
 import { validateRelevance } from './gemini.js';
 import type { Event, ContextCheckResponse } from './types.js';
 
@@ -95,18 +95,18 @@ export async function matchContext(
   console.log(`🔍 Context check: ${url}`);
   console.log(`   Keywords: ${keywords.join(', ')}`);
 
-  // Step 2: SQL search (cascading queries)
+  // Step 2: Elastic search (cascading queries)
   let candidates: Event[] = [];
 
   // Try exact location match first
   for (const kw of keywords) {
-    candidates = searchEventsByLocation(kw, hotWindowDays, 10);
+    candidates = await searchEventsByLocation(kw, hotWindowDays, 10);
     if (candidates.length > 0) break;
   }
 
-  // If no location match, try FTS
+  // If no location match, try multi-match
   if (candidates.length === 0) {
-    candidates = searchEventsByKeywords(keywords, hotWindowDays, 10);
+    candidates = await searchEventsByKeywords(keywords, hotWindowDays, 10);
   }
 
   if (candidates.length === 0) {
@@ -139,9 +139,9 @@ export async function matchContext(
 }
 
 // Quick check without Gemini (for real-time triggers)
-export function quickMatchByUrl(url: string): Event[] {
+export async function quickMatchByUrl(url: string): Promise<Event[]> {
   const { keywords } = extractContextFromUrl(url);
   if (keywords.length === 0) return [];
-  
+
   return searchEventsByKeywords(keywords.slice(0, 3), 90, 5);
 }

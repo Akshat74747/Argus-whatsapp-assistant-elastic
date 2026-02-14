@@ -2,6 +2,49 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [3.0.0-elastic] - 2026-02-15
+
+### Major — SQLite to Elasticsearch Serverless Migration
+
+Complete migration of all data storage and search from SQLite (`better-sqlite3`) to Elasticsearch Serverless (`@elastic/elasticsearch`). All CRUD operations, full-text search, and time-based queries now go through Elasticsearch Cloud.
+
+### Added
+- **`src/elastic.ts`** — New Elasticsearch client wrapper (~670 lines) replacing `db.ts`
+  - Connection via `Client({ cloud: { id }, auth: { apiKey } })` to Elastic Cloud Serverless
+  - 5 indices: `argus-events`, `argus-messages`, `argus-triggers`, `argus-contacts`, `argus-context-dismissals`
+  - Full index mappings with keyword, text, integer, float, and boolean field types
+  - In-memory numeric ID counters initialized from ES max aggregations (preserves numeric IDs expected by API + extension)
+  - All writes use `refresh: true` for immediate searchability
+  - Hybrid keyword search via `multi_match` with field boosting (`title^3`, `keywords^2`, `description`, `location`)
+  - `bool` queries with `must`, `should`, `filter` clauses for status/time/location filtering
+
+### Changed
+- **`src/server.ts`** — Async bootstrap pattern
+  - Replaced sync `initDb()` with async `bootstrap()` → `await initElastic()`
+  - All route handlers converted to `async` with `await` on every DB call
+  - `closeDb()` → `await closeElastic()`
+  - Health endpoint includes `elastic: 'connected'`
+  - Version bumped to `3.0.0-elastic`
+- **`src/ingestion.ts`** — All 20+ database calls changed from sync to `await`
+  - Import changed from `./db.js` to `./elastic.js`
+- **`src/matcher.ts`** — Search functions now async with Elastic DSL
+  - Import changed from `./db.js` to `./elastic.js`
+  - `quickMatchByUrl()` changed from sync to `async`
+- **`src/scheduler.ts`** — All scheduler functions made async with error handling
+  - Import changed from `./db.js` to `./elastic.js`
+  - Added try/catch around all async scheduler functions to prevent unhandled rejections
+- **`src/types.ts`** — Added `elasticCloudId`, `elasticApiKey`, `elasticMcpUrl` to ConfigSchema
+- **`.env` / `.env.example`** — Added Elastic Cloud credentials section
+
+### Dependencies
+- Added: `@elastic/elasticsearch`
+- Retained: `better-sqlite3` (still in package.json but no longer imported)
+
+### Architecture
+- **Fresh start** — No SQLite data migration; clean slate with Elasticsearch indices
+- **Sync→Async** — All database operations are now async (`await`), affecting every file that touches data
+- **`db.ts` preserved** — Still exists but is no longer imported by any module (safe to remove later)
+
 ## [2.7.1] - 2026-02-09
 
 ### Fixed — Webhook Pipeline & Code Compliance
