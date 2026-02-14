@@ -63,11 +63,13 @@ convert -background none icon.svg -resize 128x128 icon128.png
 - Do NOT use `node dist/server.js`, `npm run dev`, `kill`, or any server start/stop commands
 
 ## Architecture Constraints
-- SQLite + FTS5 ONLY (no FAISS, no vectors)
-- Gemini 3 Flash Preview (no OpenAI for LLM)
+- **Elasticsearch (Serverless)** used for ALL data storage and search
+- **Hybrid Search**: Keyword + Semantic (Vector) search for context matching
+- **Gemini 3 Flash Preview** (via Google AI Studio or Elastic Inference)
+- **Agent Builder**: Agents defined via Elastic Agent Builder (optional MCP integration)
 - 90-day hot window for context
 - Single container per user
-- URL detection + DOM form watching (insurance accuracy scenario)
+- URL detection + DOM form watching
 - QuickSave context compression (S2A filter + dense format) for all Gemini prompts
 
 ## QuickSave Integration (src/quicksave.ts)
@@ -89,6 +91,7 @@ convert -background none icon.svg -resize 128x128 icon128.png
 node:22-alpine              # Argus runtime
 atendai/evolution-api:v2.1.1 # WhatsApp bridge
 postgres:16-alpine          # Evolution DB
+# elasticsearch:8.15.0       # (Optional) Local Dev only
 ```
 
 ## API Endpoints
