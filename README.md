@@ -1,14 +1,14 @@
 # Argus — Proactive Memory Assistant v2.7.0
 
-AI-powered WhatsApp assistant that learns from your conversations, detects events, and reminds you at the right moment — while you browse. Refer to argus/ARCH.md for architecture details.
+AI-powered WhatsApp assistant that learns from your conversations, detects events, and reminds you at the right moment — while you browse.
 
 ## Quick Start
 
 ### Docker (Recommended — works on Linux / Windows / macOS)
 
 ```bash
-git clone https://github.com/Akshat74747/Argus-whatsapp-assistant-elastic
-cd whatsapp-chat-rmd-argus/argus
+git clone https://github.com/nityam2007/argus-whatsapp-assistant.git
+cd argus-whatsapp-assistant/argus
 cp .env.example .env          # Fill in GEMINI_API_KEY + Elasticsearch credentials
 docker compose up -d           # Starts 4 containers (builds everything from source)
 docker compose logs -f argus   # View Argus logs
@@ -71,6 +71,7 @@ argus-whatsapp-assistant/           # ← Clone this repo
 │   │   ├── server.ts               # Express + WebSocket server, all API routes
 │   │   ├── elastic.ts              # Elasticsearch — all DB operations, hybrid search
 │   │   ├── gemini.ts               # Gemini AI — extraction, popup blueprints, chat
+│   │   ├── mcp-client.ts           # Elastic Agent Builder MCP — JSON-RPC 2.0 client, agentic chat
 │   │   ├── ingestion.ts            # WhatsApp message processing pipeline
 │   │   ├── ai-tier.ts              # AI fallback tier manager (Tier 1/2/3)
 │   │   ├── fallback-heuristics.ts  # Tier 2 — regex/pattern replacements for Gemini
@@ -130,9 +131,10 @@ argus-whatsapp-assistant/           # ← Clone this repo
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/health` | GET | Health check (includes `aiTier`, `aiTierMode`) |
+| `/api/health` | GET | Health check (includes `aiTier`, `aiTierMode`, `mcpConfigured`) |
 | `/api/stats` | GET | Event and message statistics |
 | `/api/ai-status` | GET | AI tier status, cooldown, cache stats |
+| `/api/mcp-status` | GET | Elastic Agent Builder MCP status, tool list, cache info |
 
 ### Events
 
@@ -173,7 +175,7 @@ argus-whatsapp-assistant/           # ← Clone this repo
 | `/api/context-check` | POST | Check URL for matching events (hybrid kNN + BM25) |
 | `/api/form-check` | POST | Check form field mismatch against memory |
 | `/api/extract-context` | POST | Extract context from URL |
-| `/api/chat` | POST | AI Chat — context-aware conversation |
+| `/api/chat` | POST | AI Chat — agentic via MCP tools (when configured) or embedded events |
 
 ### Backup
 
@@ -295,6 +297,40 @@ When Gemini embeddings are unavailable, search degrades gracefully instead of fa
 ### Embedding Backfill
 
 Events created during a Gemini outage have `embedding: null`. A background job running every 5 minutes calls `getEventsWithoutEmbeddings()` and calls `generateEmbedding()` for each, storing the result with `updateEventEmbedding()`. BM25 search continues to work for these events in the meantime.
+
+## Elastic Agent Builder MCP
+
+When `ELASTIC_MCP_URL` is set, `/api/chat` switches from pre-loading events into a single prompt to an **agentic tool-call loop** — Gemini decides what to search and how, calling Elastic Agent Builder tools to query Elasticsearch directly.
+
+### Agentic Chat Loop
+
+```
+POST /api/chat { "query": "do I have any meetings this week?" }
+
+  1. fetchMcpTools()       — discover available tools (5-min cache)
+  2. Gemini + tools        — model decides which tool to call and with what arguments
+  3. callMcpTool()         — JSON-RPC 2.0 tools/call → Elasticsearch query executed
+  4. Gemini reads result   — may call another tool (up to 5 iterations)
+  5. Final JSON response   — { "response": "...", "relevantEventIds": [...] }
+```
+
+### Setup
+
+1. Create an **Elastic Agent Builder** project in Kibana.
+2. Grant `ELASTIC_API_KEY` the `feature_agentBuilder.read` Kibana privilege.
+3. Set `ELASTIC_MCP_URL` in `.env`:
+   ```bash
+   ELASTIC_MCP_URL=https://<project>.kb.<region>.gcp.elastic.cloud/api/agent_builder/mcp
+   ```
+
+### Fallback
+
+| Mode | `ELASTIC_MCP_URL` | Behavior |
+|------|-------------------|----------|
+| Agentic | Set | Gemini calls MCP tools in a loop; events queried on-demand |
+| Legacy | Not set | Up to 100 events embedded in prompt; single Gemini call |
+
+MCP failures (`fetchMcpTools` or max iterations exceeded) escalate through the normal `withFallback()` tier system to Tier 2 heuristics, then Tier 3 cache. Individual `callMcpTool` failures inject an error JSON as the tool result and let Gemini adapt within the same loop.
 
 ## API Error Handling
 
@@ -458,7 +494,7 @@ GEMINI_API_KEY=your_gemini_api_key_here
 ELASTIC_CLOUD_ID=your_cloud_id_here
 ELASTIC_API_KEY=your_api_key_here
 
-# ─── Gemini (optional — defaults shown) ────────────
+# ─── Gemini ────────────
 GEMINI_MODEL=gemini-3-flash-preview
 GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 
@@ -466,13 +502,16 @@ GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 EVOLUTION_API_KEY=rmd_evolution_api_key_12345
 EVOLUTION_INSTANCE_NAME=argaus
 
-# ─── AI Fallback Tier (optional) ───────────────────
+# ─── AI Fallback Tier ───────────────────
 AI_TIER_MODE=auto              # auto | tier1_only | tier2_only | tier3_only
 AI_COOLDOWN_BASE_SEC=30        # base cooldown after first failure
 AI_CACHE_TTL_SEC=3600          # Tier 3 cache TTL (seconds)
 AI_CACHE_MAX_SIZE=500          # Tier 3 LRU cache entries
 
-# ─── Backup (optional) ─────────────────────────────
+# ─── Elastic Agent Builder MCP ──────────
+# ELASTIC_MCP_URL=https://<project>.kb.<region>.gcp.elastic.cloud/api/agent_builder/mcp
+
+# ─── Backup ─────────────────────────────
 BACKUP_RETENTION_DAYS=7        # days to keep daily backups
 ```
 
