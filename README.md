@@ -7,8 +7,8 @@ AI-powered WhatsApp assistant that learns from your conversations, detects event
 ### Docker (Recommended — works on Linux / Windows / macOS)
 
 ```bash
-git clone https://github.com/nityam2007/argus-whatsapp-assistant.git
-cd argus-whatsapp-assistant/argus
+git clone https://github.com/Akshat74747/Argus-whatsapp-assistant-elastic
+cd whatsapp-chat-rmd-argus/argus
 cp .env.example .env          # Fill in GEMINI_API_KEY + Elasticsearch credentials
 docker compose up -d           # Starts 4 containers (builds everything from source)
 docker compose logs -f argus   # View Argus logs
