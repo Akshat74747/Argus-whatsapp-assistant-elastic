@@ -1,6 +1,6 @@
 # Argus — Proactive Memory Assistant v2.7.0
 
-AI-powered WhatsApp assistant that learns from your conversations, detects events, and reminds you at the right moment — while you browse.
+AI-powered WhatsApp assistant that learns from your conversations, detects events, and reminds you at the right moment — while you browse. Refer to argus/ARCH.md for architecture details.
 
 ## Quick Start
 
