@@ -6,11 +6,17 @@ import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-import { initElastic, getStats, getEventById, closeElastic, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent, getEventsForDay, updateEvent, searchEventsByKeywords } from './elastic.js';
+import { initElastic, getStats, getEventById, closeElastic, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent, getEventsForDay, updateEvent, searchEventsByKeywords, getEventsWithoutEmbeddings, updateEventEmbedding } from './elastic.js';
 import { initGemini, chatWithContext, generatePopupBlueprint } from './gemini.js';
+import { initTierManager, getAiStatus } from './ai-tier.js';
+import { initEmbeddings, generateEmbedding, buildEventEmbeddingText } from './embeddings.js';
+import { configureCache, getCacheStats } from './response-cache.js';
 import { processWebhook } from './ingestion.js';
-import { matchContext, extractContextFromUrl } from './matcher.js';
-import { startScheduler, stopScheduler, checkContextTriggers } from './scheduler.js';
+import { matchContext, extractContextFromUrl, getMatchCacheStats } from './matcher.js';
+import { startScheduler, stopScheduler, checkContextTriggers, getRetryQueueSize, getFailedReminderCount } from './scheduler.js';
+import { exportAllData, importFromBackup, getBackupList } from './backup.js';
+import * as fs from 'fs';
+import { TimeoutError } from './errors.js';
 import { parseConfig, WhatsAppWebhookSchema, ContextCheckRequestSchema } from './types.js';
 import {
   initEvolutionDb,
@@ -40,6 +46,25 @@ initGemini({
   apiKey: config.geminiApiKey,
   model: config.geminiModel,
   apiUrl: config.geminiApiUrl,
+});
+
+// Initialize AI Tier Manager
+initTierManager({
+  mode: config.aiTierMode as any,
+  baseCooldownSec: config.aiCooldownBaseSec,
+});
+
+// Initialize Embeddings
+initEmbeddings({
+  apiKey: config.geminiApiKey,
+  apiUrl: config.geminiApiUrl,
+  embeddingModel: config.geminiEmbeddingModel,
+});
+
+// Configure response cache
+configureCache({
+  maxSize: config.aiCacheMaxSize,
+  ttlSec: config.aiCacheTtlSec,
 });
 
 // Initialize Evolution PostgreSQL if configured
@@ -166,6 +191,8 @@ async function autoSetupEvolution(): Promise<void> {
 const app = express();
 app.use(cors());
 app.use(express.json());
+// 50 MB limit for the backup import endpoint (backup files can be large)
+app.use('/api/backup/import', express.json({ limit: '50mb' }));
 
 // Serve static files (dashboard)
 app.use(express.static(join(__dirname, 'public')));
@@ -178,6 +205,16 @@ const wss = new WebSocketServer({ server });
 const clients = new Set<WebSocket>();
 
 wss.on('connection', (ws) => {
+  // Terminate stale connections from previous service worker instances.
+  // There is only ever one background.js, so last-connection-wins.
+  if (clients.size > 0) {
+    console.log(`🔌 New connection: terminating ${clients.size} stale client(s)`);
+    for (const stale of clients) {
+      stale.terminate();
+    }
+    clients.clear();
+  }
+
   clients.add(ws);
   console.log('🔌 WebSocket client connected');
 
@@ -204,6 +241,7 @@ function broadcast(data: object): void {
 // Health check
 app.get('/api/health', async (_req: Request, res: Response) => {
   const evolutionOk = evolutionDbReady ? await testEvolutionConnection() : false;
+  const aiStatus = getAiStatus();
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -211,6 +249,25 @@ app.get('/api/health', async (_req: Request, res: Response) => {
     version: '3.0.0-elastic',
     evolutionDb: evolutionOk ? 'connected' : 'disconnected',
     elastic: 'connected',
+    aiTier: aiStatus.currentTier,
+    aiTierMode: aiStatus.tierMode,
+    scheduler: {
+      retryQueueSize: getRetryQueueSize(),
+      failedReminderCount: getFailedReminderCount(),
+    },
+    matchCache: getMatchCacheStats(),
+  });
+});
+
+// AI Status — detailed tier health info
+app.get('/api/ai-status', (_req: Request, res: Response) => {
+  const status = getAiStatus();
+  const cache = getCacheStats();
+  res.json({
+    ...status,
+    cooldownRemainingMs: status.cooldownUntil ? Math.max(0, status.cooldownUntil - Date.now()) : null,
+    cache,
+    embeddingModel: config.geminiEmbeddingModel,
   });
 });
 
@@ -229,7 +286,83 @@ app.get('/api/stats', async (_req: Request, res: Response) => {
   });
 });
 
-// Get events (with status filter)
+// ============ Backup API ============
+
+// GET /api/backup/export — download full snapshot as a JSON file
+app.get('/api/backup/export', async (_req: Request, res: Response) => {
+  try {
+    const payload = await exportAllData();
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `argus-backup-${dateStr}.json`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(JSON.stringify(payload));
+  } catch (err) {
+    console.error('[Backup] Export error:', err);
+    res.status(500).json({ error: 'Export failed', detail: (err as Error).message });
+  }
+});
+
+// GET /api/backup/list — list local backup files with metadata
+app.get('/api/backup/list', async (_req: Request, res: Response) => {
+  try {
+    const list = await getBackupList();
+    res.json({ backups: list, count: list.length });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to list backups', detail: (err as Error).message });
+  }
+});
+
+// POST /api/backup/import — restore from uploaded backup payload
+app.post('/api/backup/import', async (req: Request, res: Response) => {
+  try {
+    const { backup, mode = 'merge' } = req.body as {
+      backup: any;
+      mode?: 'merge' | 'replace';
+      indices?: string[];
+    };
+    if (!backup) return res.status(400).json({ error: '"backup" field is required' }) as any;
+    if (!['merge', 'replace'].includes(mode)) {
+      return res.status(400).json({ error: 'mode must be "merge" or "replace"' }) as any;
+    }
+    const result = await importFromBackup(backup, {
+      mode,
+      indices: req.body.indices,
+    });
+    res.json({ success: true, imported: result });
+  } catch (err) {
+    console.error('[Backup] Import error:', err);
+    res.status(500).json({ error: 'Import failed', detail: (err as Error).message });
+  }
+});
+
+// POST /api/backup/restore/:filename — restore from a local backup file
+app.post('/api/backup/restore/:filename', async (req: Request, res: Response) => {
+  try {
+    const filename = req.params.filename as string;
+    const mode = (req.body?.mode as 'merge' | 'replace') || 'merge';
+
+    // Safety: only allow our own backup filenames
+    if (!/^argus-backup-\d{4}-\d{2}-\d{2}\.json$/.test(filename)) {
+      return res.status(400).json({ error: 'Invalid backup filename' }) as any;
+    }
+
+    const filePath = join(process.cwd(), 'data', 'backups', filename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: `Backup file not found: ${filename}` }) as any;
+    }
+
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const backup = JSON.parse(raw);
+    const result = await importFromBackup(backup, { mode, indices: req.body?.indices });
+    res.json({ success: true, filename, imported: result });
+  } catch (err) {
+    console.error('[Backup] Restore error:', err);
+    res.status(500).json({ error: 'Restore failed', detail: (err as Error).message });
+  }
+});
+
+// GET /api/events (with status filter)
 app.get('/api/events', async (req: Request, res: Response) => {
   const limit = parseInt(req.query.limit as string) || 50;
   const offset = parseInt(req.query.offset as string) || 0;
@@ -565,7 +698,14 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 
     console.log(`💬 [CHAT] Query: "${query}" (${eventsForContext.length} events in context)`);
 
-    const chatResult = await chatWithContext(query, eventsForContext, history || []);
+    const CHAT_TIMEOUT_MS = 30000;
+    const chatTimeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new TimeoutError('chatWithContext timed out')), CHAT_TIMEOUT_MS)
+    );
+    const chatResult = await Promise.race([
+      chatWithContext(query, eventsForContext, history || []),
+      chatTimeoutPromise,
+    ]);
 
     const referencedEvents = chatResult.relevantEventIds
       .map((id: number) => allEvents.find((e: any) => e.id === id))
@@ -578,31 +718,51 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       events: referencedEvents,
     });
   } catch (error) {
-    console.error('Chat error:', error);
-    res.status(500).json({ error: 'Failed to process chat query' });
+    if (error instanceof TimeoutError) {
+      console.warn('[CHAT] Timeout after 30s');
+      res.status(200).json({ response: "I'm taking too long to think. Try asking again!", events: [] });
+    } else {
+      console.error('Chat error:', error);
+      res.status(500).json({ error: 'Failed to process chat query' });
+    }
   }
 });
 
 // WhatsApp webhook
 app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
+  // Respond 202 if processing takes >45s so the extension doesn't hang
+  let responded = false;
+  let webhookTimeoutId: ReturnType<typeof setTimeout> | undefined;
+
   try {
     console.log(`📩 [WEBHOOK] Received event: ${req.body.event} from instance: ${req.body.instance}`);
 
     if (req.body.event !== 'messages.upsert') {
+      responded = true;
       res.json({ skipped: true, reason: 'event_type_ignored', event: req.body.event });
       return;
     }
 
     const parsed = WhatsAppWebhookSchema.safeParse(req.body);
     if (!parsed.success) {
+      responded = true;
       res.status(400).json({ error: 'Invalid payload', details: parsed.error.errors });
       return;
     }
+
+    webhookTimeoutId = setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        console.warn('[WEBHOOK] Processing >45s — responding 202, continuing in background');
+        res.status(202).json({ accepted: true, note: 'Processing in background' });
+      }
+    }, 45000);
 
     const result = await processWebhook(parsed.data, {
       processOwnMessages: config.processOwnMessages,
       skipGroupMessages: config.skipGroupMessages,
     });
+    clearTimeout(webhookTimeoutId);
 
     // Handle ACTION results
     if (result.actionPerformed && result.actionPerformed.action !== 'none') {
@@ -680,15 +840,31 @@ app.post('/api/webhook/whatsapp', async (req: Request, res: Response) => {
       }
     }
 
-    res.json(result);
+    if (!responded) {
+      responded = true;
+      res.json(result);
+    }
   } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    clearTimeout(webhookTimeoutId);
+    if (!responded) {
+      responded = true;
+      console.error('Webhook error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    } else {
+      console.error('[WEBHOOK] Background processing error:', error);
+    }
   }
 });
 
 // Context check (from Chrome extension)
 app.post('/api/context-check', async (req: Request, res: Response) => {
+  const matchContextWithTimeout = (url: string, title: string | undefined, days: number) => {
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new TimeoutError('matchContext timed out')), 15000)
+    );
+    return Promise.race([matchContext(url, title, days), timeout]);
+  };
+
   try {
     console.log(`🔍 [CONTEXT-CHECK] Checking URL: ${req.body.url}`);
     const parsed = ContextCheckRequestSchema.safeParse(req.body);
@@ -730,7 +906,7 @@ app.post('/api/context-check', async (req: Request, res: Response) => {
         contextTriggersWithPopups.push({ ...trigger, popup });
       }
 
-      const result = await matchContext(
+      const result = await matchContextWithTimeout(
         parsed.data.url,
         parsed.data.title,
         config.hotWindowDays
@@ -756,8 +932,13 @@ app.post('/api/context-check', async (req: Request, res: Response) => {
       contextTriggersCount: contextTriggers.length,
     });
   } catch (error) {
-    console.error('Context check error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (error instanceof TimeoutError) {
+      console.warn('[CONTEXT-CHECK] Timeout after 15s for URL:', req.body.url);
+      res.json({ matched: false, events: [], contextTriggers: [], contextTriggersCount: 0 });
+    } else {
+      console.error('Context check error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 });
 
@@ -878,6 +1059,41 @@ process.on('SIGTERM', async () => {
   server.close(() => process.exit(0));
 });
 
+// ============ Embedding Backfill ============
+// Runs periodically to generate embeddings for events that were stored
+// during a Gemini outage (when embedding generation failed silently).
+
+async function runEmbeddingBackfill(): Promise<void> {
+  try {
+    const events = await getEventsWithoutEmbeddings(50);
+    if (events.length === 0) return;
+
+    console.log(`🔢 [Backfill] Found ${events.length} event(s) without embeddings, generating...`);
+    let count = 0;
+
+    for (const event of events) {
+      if (!event.id) continue;
+      const text = buildEventEmbeddingText({
+        title: event.title,
+        description: event.description,
+        keywords: event.keywords,
+        location: event.location,
+      });
+      const embedding = await generateEmbedding(text);
+      if (embedding) {
+        await updateEventEmbedding(event.id, embedding);
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      console.log(`✅ [Backfill] Generated ${count} embedding(s)`);
+    }
+  } catch (err) {
+    console.warn('[Backfill] Embedding backfill error:', (err as Error).message);
+  }
+}
+
 // ============ Bootstrap: Init Elastic then start server ============
 async function bootstrap(): Promise<void> {
   try {
@@ -906,10 +1122,14 @@ async function bootstrap(): Promise<void> {
     }
 
     broadcast({ type, event, popupType, popup });
-  });
+  }, 60000, config.backupRetentionDays);
 
   // Fire and forget
   autoSetupEvolution();
+
+  // Initial backfill + 5-minute interval for events missing embeddings
+  runEmbeddingBackfill();
+  setInterval(runEmbeddingBackfill, 5 * 60 * 1000);
 
   server.listen(config.port, () => {
     console.log(`
@@ -935,3 +1155,12 @@ async function bootstrap(): Promise<void> {
 bootstrap();
 
 export { app, server };
+
+
+
+
+
+
+
+
+

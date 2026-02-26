@@ -2,9 +2,9 @@
 // In-page overlay popups for event notifications
 // Popup Types: event_discovery, event_reminder, context_reminder, conflict_warning, insight_card
 
-(function() {
+(function () {
   'use strict';
-  
+
   // Track dismissed/handled events (persisted for session)
   const dismissedEventIds = new Set();
   const handledEventIds = new Set();
@@ -25,8 +25,9 @@
       left: 0;
       width: 100vw;
       height: 100vh;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(4px);
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       z-index: 2147483647;
       display: flex;
       align-items: center;
@@ -51,13 +52,17 @@
 
     /* Modal Container */
     #argus-modal {
-      background: #ffffff;
+      background: rgba(30, 41, 59, 0.75);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
       border-radius: 16px;
-      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
       max-width: 420px;
       width: 92%;
       overflow: hidden;
       animation: argus-scale-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      color: #ffffff;
     }
 
     #argus-modal.hiding {
@@ -68,22 +73,24 @@
     .argus-header {
       padding: 24px 24px 20px;
       position: relative;
-      color: white;
+      color: #ffffff;
+      background: transparent;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     }
 
-    .argus-header.discovery { background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); }
-    .argus-header.reminder { background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); }
-    .argus-header.context { background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); }
-    .argus-header.conflict { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
-    .argus-header.insight { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
+    .argus-header.discovery .argus-icon { background: rgba(99, 102, 241, 0.2); border: 1px solid rgba(99, 102, 241, 0.4); box-shadow: 0 0 15px rgba(99, 102, 241, 0.3); }
+    .argus-header.reminder .argus-icon { background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); box-shadow: 0 0 15px rgba(245, 158, 11, 0.3); }
+    .argus-header.context .argus-icon { background: rgba(14, 165, 233, 0.2); border: 1px solid rgba(14, 165, 233, 0.4); box-shadow: 0 0 15px rgba(14, 165, 233, 0.3); }
+    .argus-header.conflict .argus-icon { background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); box-shadow: 0 0 15px rgba(239, 68, 68, 0.3); }
+    .argus-header.insight .argus-icon { background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); box-shadow: 0 0 15px rgba(16, 185, 129, 0.3); }
 
     .argus-close-btn {
       position: absolute;
       top: 12px;
       right: 12px;
-      background: rgba(255, 255, 255, 0.2);
-      border: none;
-      color: white;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #94a3b8;
       width: 32px;
       height: 32px;
       border-radius: 50%;
@@ -92,17 +99,17 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: background 0.2s;
+      transition: all 0.2s;
     }
 
     .argus-close-btn:hover {
-      background: rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
     }
 
     .argus-icon {
       width: 56px;
       height: 56px;
-      background: rgba(255, 255, 255, 0.2);
       border-radius: 50%;
       display: flex;
       align-items: center;
@@ -121,7 +128,7 @@
     .argus-subtitle {
       font-size: 13px;
       text-align: center;
-      opacity: 0.9;
+      color: #cbd5e1;
     }
 
     /* Body */
@@ -132,14 +139,14 @@
     .argus-event-title {
       font-size: 17px;
       font-weight: 600;
-      color: #1f2937;
+      color: #ffffff;
       margin-bottom: 6px;
       line-height: 1.3;
     }
 
     .argus-event-desc {
       font-size: 14px;
-      color: #6b7280;
+      color: #94a3b8;
       line-height: 1.5;
       margin-bottom: 16px;
     }
@@ -155,11 +162,12 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: #f3f4f6;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
       padding: 6px 12px;
       border-radius: 20px;
       font-size: 12px;
-      color: #4b5563;
+      color: #cbd5e1;
     }
 
     .argus-meta-item span {
@@ -167,13 +175,13 @@
     }
 
     .argus-question {
-      background: #f9fafb;
-      border: 1px dashed #d1d5db;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 10px;
       padding: 14px;
       text-align: center;
       font-size: 14px;
-      color: #4b5563;
+      color: #cbd5e1;
       margin-bottom: 20px;
     }
 
@@ -216,53 +224,62 @@
       background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
       color: white;
       box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.1);
     }
 
     .argus-btn-primary:hover {
-      box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+      box-shadow: 0 6px 16px rgba(99, 102, 241, 0.5);
     }
 
     .argus-btn-success {
       background: linear-gradient(135deg, #10b981 0%, #059669 100%);
       color: white;
       box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .argus-btn-success:hover {
+      box-shadow: 0 6px 16px rgba(16, 185, 129, 0.5);
     }
 
     .argus-btn-secondary {
-      background: #f3f4f6;
-      color: #4b5563;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #ffffff;
     }
 
     .argus-btn-secondary:hover {
-      background: #e5e7eb;
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
     }
 
     .argus-btn-outline {
       background: transparent;
-      border: 1px solid #e5e7eb;
-      color: #6b7280;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #94a3b8;
     }
 
     .argus-btn-outline:hover {
-      background: #f9fafb;
-      border-color: #d1d5db;
+      background: rgba(255, 255, 255, 0.05);
+      color: #ffffff;
+      border-color: rgba(255, 255, 255, 0.25);
     }
 
     /* Footer */
     .argus-footer {
       padding: 12px 24px;
       text-align: center;
-      background: #f9fafb;
-      border-top: 1px solid #f3f4f6;
+      background: rgba(0, 0, 0, 0.15);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
     }
 
     .argus-powered {
       font-size: 11px;
-      color: #9ca3af;
+      color: #64748b;
     }
 
     .argus-powered strong {
-      color: #6366f1;
+      color: #818cf8;
     }
 
     /* Toast Notifications */
@@ -278,10 +295,78 @@
     }
 
     .argus-toast {
-      background: #1f2937;
+      background: rgba(30, 41, 59, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
       border-radius: 10px;
       padding: 14px 18px;
       min-width: 280px;
+      max-width: 360px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      color: #f8fafc;
+      pointer-events: all;
+      animation: argus-slide-in 0.3s ease-out;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    @keyframes argus-slide-in {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    .argus-toast.hiding {
+      animation: argus-slide-out 0.2s ease-in forwards;
+    }
+
+    @keyframes argus-slide-out {
+      from { transform: translateX(0); opacity: 1; }
+      to { transform: translateX(100%); opacity: 0; }
+    }
+
+    .argus-toast-icon {
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .argus-toast-content {
+      flex: 1;
+    }
+
+    .argus-toast-title {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 2px;
+    }
+
+    .argus-toast-desc {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .argus-toast-close {
+      background: none;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    .argus-toast-close:hover {
+      color: #f8fafc;
+    }
+
+    .argus-toast-error {
+      border-left: 3px solid #f87171;
+    }
+
+    .argus-toast-error .argus-toast-icon {
+      color: #f87171;
+    }
       max-width: 360px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
       color: #f9fafb;
@@ -360,13 +445,13 @@
           icon: eventType === 'recommendation' ? '💡' : eventType === 'subscription' ? '💳' : eventType === 'meeting' ? '📅' : eventType === 'task' ? '📝' : '📅',
           headerClass: eventType === 'recommendation' ? 'insight' : 'discovery',
           title: eventType === 'recommendation' ? 'Remember This?' :
-                 eventType === 'subscription' ? 'Subscription Alert!' :
-                 eventType === 'meeting' ? 'New Event Detected!' :
-                 'New Event Detected!',
+            eventType === 'subscription' ? 'Subscription Alert!' :
+              eventType === 'meeting' ? 'New Event Detected!' :
+                'New Event Detected!',
           subtitle: sender !== 'Someone' ? 'From your chat with ' + sender : 'From your WhatsApp messages',
           question: eventType === 'recommendation' ? 'Want to save this for later?' :
-                    eventType === 'subscription' ? 'Want to set a reminder for this?' :
-                    'Would you like to set a reminder?',
+            eventType === 'subscription' ? 'Want to set a reminder for this?' :
+              'Would you like to set a reminder?',
           buttons: [
             { text: '⏰ Set Reminder', action: 'set-reminder', style: 'primary' },
             { text: '💤 Later', action: 'snooze', style: 'secondary' },
@@ -430,7 +515,7 @@
 
       case 'conflict_warning': {
         const conflicts = extraData.conflictingEvents || [];
-        const conflictNames = conflicts.map(function(e) { return e.title; }).join(', ');
+        const conflictNames = conflicts.map(function (e) { return e.title; }).join(', ');
         // Build a human, conversational message
         let friendlyQuestion = 'You may have overlapping commitments.';
         if (conflicts.length === 1) {
@@ -556,7 +641,7 @@
     }
 
     console.log(`[Argus] 🎨 Showing popup: type="${popupType}", event="${event.title}" (id: ${event.id})`);
-    
+
     injectStyles();
 
     // Close any existing modal
@@ -592,7 +677,7 @@
 
     // Build modal HTML
     let html = '<div id="argus-modal">';
-    
+
     // Header
     html += '<div class="argus-header ' + config.headerClass + '">';
     html += '<button class="argus-close-btn" data-action="close">✕</button>';
@@ -604,7 +689,7 @@
     // Body
     html += '<div class="argus-body">';
     html += '<div class="argus-event-title">' + escapeHtml(event.title || 'Untitled Event') + '</div>';
-    
+
     if (event.description) {
       // Build smart description with sender attribution
       let desc = event.description;
@@ -631,7 +716,7 @@
     if (popupType === 'conflict_warning' && extraData.conflictingEvents && extraData.conflictingEvents.length > 0) {
       html += '<div class="argus-question" style="background: #fff7ed; border-color: #fed7aa; color: #9a3412; border-radius: 10px; padding: 12px 16px;">';
       html += '<strong>📅 What\'s already on your plate:</strong><br><br>';
-      extraData.conflictingEvents.forEach(function(conflict) {
+      extraData.conflictingEvents.forEach(function (conflict) {
         let conflictTime = '';
         if (conflict.event_time) {
           const d = new Date(conflict.event_time * 1000);
@@ -651,7 +736,7 @@
     if (event.id && config.buttons.length > 0) {
       html += '<div class="argus-actions">';
       html += '<div class="argus-actions-row">';
-      config.buttons.slice(0, 2).forEach(function(btn) {
+      config.buttons.slice(0, 2).forEach(function (btn) {
         html += '<button class="argus-btn argus-btn-' + btn.style + '" data-action="' + btn.action + '">' + btn.text + '</button>';
       });
       html += '</div>';
@@ -675,8 +760,8 @@
     currentModal = backdrop;
 
     // Event handlers
-    backdrop.querySelectorAll('[data-action]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
+    backdrop.querySelectorAll('[data-action]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
         const action = this.getAttribute('data-action');
         if (action === 'close') {
           closeModal();
@@ -688,7 +773,7 @@
 
     // Close on backdrop click (except for context reminders)
     if (popupType !== 'context_reminder') {
-      backdrop.addEventListener('click', function(e) {
+      backdrop.addEventListener('click', function (e) {
         if (e.target === backdrop) {
           closeModal();
         }
@@ -709,7 +794,7 @@
     const modalToRemove = currentModal;
     currentModal = null;
 
-    setTimeout(function() {
+    setTimeout(function () {
       if (modalToRemove && modalToRemove.parentNode) {
         modalToRemove.remove();
       }
@@ -719,7 +804,7 @@
   function handleAction(action, event, popupType, extraData) {
     const eventId = event.id;
     console.log(`[Argus] 🔵 User action: "${action}" on event #${eventId} (popup: ${popupType})`);
-    
+
     // Track this event as handled so we don't show it again
     if (eventId) {
       handledEventIds.add(eventId);
@@ -729,62 +814,78 @@
       case 'set-reminder':
       case 'schedule':
         console.log(`[Argus] 📡 Sending SET_REMINDER message to background for event #${eventId}`);
-        chrome.runtime.sendMessage({ type: 'SET_REMINDER', eventId: eventId });
-        showToast('📅 Scheduled!', 'You will be reminded before the event.');
+        safeSendMessage(
+          { type: 'SET_REMINDER', eventId: eventId },
+          { title: '📅 Scheduled!', desc: 'You will be reminded before the event.' },
+          '❌ Couldn\'t Schedule'
+        );
         break;
 
       case 'snooze':
         console.log(`[Argus] 📡 Sending SNOOZE for event #${eventId}`);
-        chrome.runtime.sendMessage({ type: 'SNOOZE_EVENT', eventId: eventId, minutes: 30 });
-        showToast('💤 Snoozed!', 'Reminder in 30 minutes.');
+        safeSendMessage(
+          { type: 'SNOOZE_EVENT', eventId: eventId, minutes: 30 },
+          { title: '💤 Snoozed!', desc: 'Reminder in 30 minutes.' },
+          '❌ Couldn\'t Snooze'
+        );
         break;
 
       case 'ignore':
         console.log(`[Argus] 📡 Sending IGNORE for event #${eventId}`);
-        chrome.runtime.sendMessage({ type: 'IGNORE_EVENT', eventId: eventId });
-        showToast('🚫 Ignored', 'Event will not remind you.');
+        safeSendMessage(
+          { type: 'IGNORE_EVENT', eventId: eventId },
+          { title: '🚫 Ignored', desc: 'Event will not remind you.' },
+          '❌ Couldn\'t Ignore'
+        );
         break;
 
       case 'acknowledge':
         console.log(`[Argus] 📡 Sending ACKNOWLEDGE_REMINDER for event #${eventId}`);
-        chrome.runtime.sendMessage({ type: 'ACKNOWLEDGE_REMINDER', eventId: eventId });
+        safeSendMessage(
+          { type: 'ACKNOWLEDGE_REMINDER', eventId: eventId },
+          null,
+          '❌ Acknowledge Failed'
+        );
         break;
 
       case 'done':
       case 'complete':
         console.log(`[Argus] 📡 Sending COMPLETE for event #${eventId}`);
-        chrome.runtime.sendMessage({ type: 'COMPLETE_EVENT', eventId: eventId });
-        showToast('✅ Completed!', event.title);
+        safeSendMessage(
+          { type: 'COMPLETE_EVENT', eventId: eventId },
+          { title: '✅ Completed!', desc: event.title },
+          '❌ Couldn\'t Complete'
+        );
         break;
 
       case 'dismiss':
       case 'dismiss-temp':
         console.log(`[Argus] 🔔 Temporary dismiss for event #${eventId}`);
         if (eventId) dismissedEventIds.add(eventId);
-        chrome.runtime.sendMessage({
-          type: 'DISMISS_EVENT',
-          eventId: eventId,
-          permanent: false,
-          url: extraData.url || window.location.href
-        });
+        safeSendMessage(
+          { type: 'DISMISS_EVENT', eventId: eventId, permanent: false, url: extraData.url || window.location.href },
+          null,
+          '❌ Dismiss Failed'
+        );
         break;
 
       case 'dismiss-permanent':
         console.log(`[Argus] ❌ Permanent dismiss for event #${eventId}`);
         if (eventId) dismissedEventIds.add(eventId);
-        chrome.runtime.sendMessage({
-          type: 'DISMISS_EVENT',
-          eventId: eventId,
-          permanent: true,
-          url: extraData.url || window.location.href
-        });
-        showToast('Got it!', "Won't show this reminder again.");
+        safeSendMessage(
+          { type: 'DISMISS_EVENT', eventId: eventId, permanent: true, url: extraData.url || window.location.href },
+          { title: 'Got it!', desc: "Won't show this reminder again." },
+          '❌ Dismiss Failed'
+        );
         break;
 
       case 'delete':
         console.log(`[Argus] 🗑️ Deleting event #${eventId}`);
-        chrome.runtime.sendMessage({ type: 'DELETE_EVENT', eventId: eventId });
-        showToast('🗑️ Event Deleted', event.title);
+        safeSendMessage(
+          { type: 'DELETE_EVENT', eventId: eventId },
+          { title: '🗑️ Event Deleted', desc: event.title },
+          '❌ Couldn\'t Delete'
+        );
         break;
 
       case 'view':
@@ -798,7 +899,7 @@
         var dayTimestamp = event.event_time || Math.floor(Date.now() / 1000);
         chrome.runtime.sendMessage(
           { type: 'GET_DAY_EVENTS', timestamp: dayTimestamp },
-          function(response) {
+          function (response) {
             if (response && response.events) {
               showDayScheduleInline(response.date, response.events, event);
             } else {
@@ -817,18 +918,18 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ changes: changes }),
         })
-        .then(function(res) { return res.json(); })
-        .then(function(data) {
-          if (data.ok) {
-            showToast('📝 Updated!', event.title + ' has been updated.');
-          } else {
-            showToast('❌ Update failed', data.error || 'Could not update event.');
-          }
-        })
-        .catch(function(err) {
-          console.error('[Argus] Confirm-update error:', err);
-          showToast('❌ Error', 'Could not reach server.');
-        });
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (data.ok) {
+              showToast('📝 Updated!', event.title + ' has been updated.');
+            } else {
+              showToast('❌ Update failed', data.error || 'Could not update event.');
+            }
+          })
+          .catch(function (err) {
+            console.error('[Argus] Confirm-update error:', err);
+            showToast('❌ Error', 'Could not reach server.');
+          });
         break;
 
       case 'fix-form-field':
@@ -839,7 +940,7 @@
           argusFormWatcherTarget.dispatchEvent(new Event('input', { bubbles: true }));
           argusFormWatcherTarget.focus();
           argusFormWatcherTarget.style.outline = '3px solid #22c55e';
-          setTimeout(function() { argusFormWatcherTarget.style.outline = ''; }, 2000);
+          setTimeout(function () { argusFormWatcherTarget.style.outline = ''; }, 2000);
           showToast('✏️ Fixed!', 'Updated to: ' + extraData.remembered);
         } else {
           showToast('✏️ Fix it manually', 'Change the value to: ' + (extraData.remembered || 'the correct one'));
@@ -869,7 +970,7 @@
     if (events.length === 0) {
       timeline = '<div style="color: #64748b; font-size: 12px; padding: 8px 0;">Nothing scheduled — your day is wide open! 🎉</div>';
     } else {
-      events.forEach(function(ev) {
+      events.forEach(function (ev) {
         var time = '';
         if (ev.event_time) {
           var d = new Date(ev.event_time * 1000);
@@ -878,7 +979,7 @@
         var isCurrent = currentEvent && ev.id === currentEvent.id;
         var isConflict = currentEvent && currentEvent.event_time && ev.event_time &&
           Math.abs(ev.event_time - currentEvent.event_time) < 3600 && ev.id !== currentEvent.id;
-        
+
         var dotColor = isConflict ? '#ef4444' : (isCurrent ? '#3b82f6' : '#10b981');
         var bg = isConflict ? 'background: #fef2f2;' : (isCurrent ? 'background: #eff6ff;' : '');
         var label = isConflict ? ' <span style="color: #ef4444; font-size: 10px;">⚠️ overlaps</span>' : '';
@@ -912,30 +1013,66 @@
 
     const toast = document.createElement('div');
     toast.className = 'argus-toast';
-    toast.innerHTML = 
+    toast.innerHTML =
       '<div class="argus-toast-icon">✓</div>' +
       '<div class="argus-toast-content">' +
-        '<div class="argus-toast-title">' + escapeHtml(title) + '</div>' +
-        '<div class="argus-toast-desc">' + escapeHtml(description) + '</div>' +
+      '<div class="argus-toast-title">' + escapeHtml(title) + '</div>' +
+      '<div class="argus-toast-desc">' + escapeHtml(description) + '</div>' +
       '</div>' +
       '<button class="argus-toast-close">✕</button>';
 
-    toast.querySelector('.argus-toast-close').addEventListener('click', function() {
+    toast.querySelector('.argus-toast-close').addEventListener('click', function () {
       removeToast(toast);
     });
 
     container.appendChild(toast);
 
     // Auto-remove after 4 seconds
-    setTimeout(function() {
+    setTimeout(function () {
       removeToast(toast);
     }, 4000);
+  }
+
+  function showErrorToast(title, description) {
+    injectStyles();
+    const container = createToastContainer();
+    const toast = document.createElement('div');
+    toast.className = 'argus-toast argus-toast-error';
+    toast.innerHTML =
+      '<div class="argus-toast-icon">✕</div>' +
+      '<div class="argus-toast-content">' +
+      '<div class="argus-toast-title">' + escapeHtml(title) + '</div>' +
+      '<div class="argus-toast-desc">' + escapeHtml(description) + '</div>' +
+      '</div>' +
+      '<button class="argus-toast-close">✕</button>';
+    toast.querySelector('.argus-toast-close').addEventListener('click', function () {
+      removeToast(toast);
+    });
+    container.appendChild(toast);
+    setTimeout(function () { removeToast(toast); }, 5000); // 5s for errors (vs 4s success)
+  }
+
+  // Wrapper for all chrome.runtime.sendMessage calls.
+  // Handles: service worker crash (lastError), API errors (response.error),
+  // timeout (response.timeout), and offline (response.offline).
+  function safeSendMessage(msg, successToast, errorTitle) {
+    chrome.runtime.sendMessage(msg, function (response) {
+      if (chrome.runtime.lastError) {
+        showErrorToast('❌ Extension Error', 'Argus background service is not running.');
+        return;
+      }
+      if (response && response.error) {
+        showErrorToast(errorTitle || '❌ Action Failed', response.error);
+      } else if (successToast) {
+        showToast(successToast.title, successToast.desc);
+      }
+    });
   }
 
   function removeToast(toast) {
     if (!toast || !toast.parentNode) return;
     toast.classList.add('hiding');
-    setTimeout(function() {
+    setTimeout(function () {
       if (toast.parentNode) {
         toast.remove();
       }
@@ -967,7 +1104,7 @@
     // Also check input placeholders for car-related hints
     const inputs = document.querySelectorAll('input');
     let hasCarInput = false;
-    inputs.forEach(function(inp) {
+    inputs.forEach(function (inp) {
       const ph = (inp.placeholder || '').toLowerCase();
       if (ph.includes('car') || ph.includes('vehicle') || ph.includes('model')) hasCarInput = true;
     });
@@ -1015,30 +1152,30 @@
         parsed: carInfo,
       }),
     })
-    .then(function(res) { return res.json(); })
-    .then(function(data) {
-      if (data.mismatch && !formMismatchShown) {
-        formMismatchShown = true;
-        console.log('[Argus] ⚠️ Form mismatch detected!', data);
-        showModal(
-          {
-            id: 'form-mismatch-' + Date.now(),
-            title: data.entered + ' → should be ' + data.remembered,
-            description: data.suggestion,
-            event_type: 'form_check',
-          },
-          'form_mismatch',
-          {
-            remembered: data.remembered,
-            entered: data.entered,
-            suggestion: data.suggestion,
-          }
-        );
-      }
-    })
-    .catch(function(err) {
-      console.error('[Argus] Form check error:', err);
-    });
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data.mismatch && !formMismatchShown) {
+          formMismatchShown = true;
+          console.log('[Argus] ⚠️ Form mismatch detected!', data);
+          showModal(
+            {
+              id: 'form-mismatch-' + Date.now(),
+              title: data.entered + ' → should be ' + data.remembered,
+              description: data.suggestion,
+              event_type: 'form_check',
+            },
+            'form_mismatch',
+            {
+              remembered: data.remembered,
+              entered: data.entered,
+              suggestion: data.suggestion,
+            }
+          );
+        }
+      })
+      .catch(function (err) {
+        console.error('[Argus] Form check error:', err);
+      });
   }
 
   function attachFormWatchers() {
@@ -1047,30 +1184,30 @@
 
     // Watch all text inputs on the page
     const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
-    inputs.forEach(function(input) {
+    inputs.forEach(function (input) {
       if (input.dataset.argusWatching) return;
       input.dataset.argusWatching = 'true';
 
-      input.addEventListener('input', function() {
+      input.addEventListener('input', function () {
         clearTimeout(formCheckTimer);
-        formCheckTimer = setTimeout(function() {
+        formCheckTimer = setTimeout(function () {
           checkFormFieldForMismatch(input);
         }, FORM_CHECK_DEBOUNCE);
       });
     });
 
     // Also watch for dynamically added inputs
-    const observer = new MutationObserver(function(mutations) {
-      mutations.forEach(function(mutation) {
-        mutation.addedNodes.forEach(function(node) {
+    const observer = new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        mutation.addedNodes.forEach(function (node) {
           if (node.nodeType !== 1) return;
           const newInputs = node.querySelectorAll ? node.querySelectorAll('input[type="text"], input:not([type])') : [];
-          newInputs.forEach(function(input) {
+          newInputs.forEach(function (input) {
             if (input.dataset.argusWatching) return;
             input.dataset.argusWatching = 'true';
-            input.addEventListener('input', function() {
+            input.addEventListener('input', function () {
               clearTimeout(formCheckTimer);
-              formCheckTimer = setTimeout(function() {
+              formCheckTimer = setTimeout(function () {
                 checkFormFieldForMismatch(input);
               }, FORM_CHECK_DEBOUNCE);
             });
@@ -1089,83 +1226,93 @@
   }
 
   // ============ MESSAGE HANDLERS ============
-  chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+  chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     console.log(`[Argus] 📬 Content script received: ${message.type}`);
 
-    switch (message.type) {
-      case 'ARGUS_NEW_EVENT':
-        console.log(`[Argus] 📅 New event discovered: "${message.event?.title}" (id: ${message.event?.id})`);
-        showModal(message.event, 'event_discovery', { popup: message.popup });
-        sendResponse({ received: true });
-        break;
+    try {
+      switch (message.type) {
+        case 'ARGUS_NEW_EVENT':
+          console.log(`[Argus] 📅 New event discovered: "${message.event?.title}" (id: ${message.event?.id})`);
+          showModal(message.event, 'event_discovery', { popup: message.popup });
+          sendResponse({ received: true });
+          break;
 
-      case 'ARGUS_REMINDER':
-        console.log(`[Argus] ⏰ Time-based reminder: "${message.event?.title || message.message}" (id: ${message.event?.id})`);
-        showModal(message.event || { title: message.message }, 'event_reminder', { popup: message.popup });
-        sendResponse({ received: true });
-        break;
+        case 'ARGUS_REMINDER':
+          console.log(`[Argus] ⏰ Time-based reminder: "${message.event?.title || message.message}" (id: ${message.event?.id})`);
+          showModal(message.event || { title: message.message }, 'event_reminder', { popup: message.popup });
+          sendResponse({ received: true });
+          break;
 
-      case 'ARGUS_CONTEXT_REMINDER':
-        console.log(`[Argus] 🌐 Context reminder: "${message.event?.title}" (id: ${message.event?.id}) for URL: ${message.url}`);
-        showModal(message.event, 'context_reminder', { url: message.url, popup: message.popup });
-        sendResponse({ received: true });
-        break;
+        case 'ARGUS_CONTEXT_REMINDER':
+          console.log(`[Argus] 🌐 Context reminder: "${message.event?.title}" (id: ${message.event?.id}) for URL: ${message.url}`);
+          showModal(message.event, 'context_reminder', { url: message.url, popup: message.popup });
+          sendResponse({ received: true });
+          break;
 
-      case 'ARGUS_CONFLICT':
-        console.log(`[Argus] ⚠️ Conflict warning: "${message.event?.title}" conflicts with ${message.conflictingEvents?.length} event(s)`);
-        showModal(message.event, 'conflict_warning', { conflictingEvents: message.conflictingEvents, popup: message.popup });
-        sendResponse({ received: true });
-        break;
+        case 'ARGUS_CONFLICT':
+          console.log(`[Argus] ⚠️ Conflict warning: "${message.event?.title}" conflicts with ${message.conflictingEvents?.length} event(s)`);
+          showModal(message.event, 'conflict_warning', { conflictingEvents: message.conflictingEvents, popup: message.popup });
+          sendResponse({ received: true });
+          break;
 
-      case 'ARGUS_INSIGHT':
-        console.log(`[Argus] 💡 Insight card: "${message.event?.title}"`);
-        showModal(message.event, 'insight_card', { popup: message.popup });
-        sendResponse({ received: true });
-        break;
+        case 'ARGUS_INSIGHT':
+          console.log(`[Argus] 💡 Insight card: "${message.event?.title}"`);
+          showModal(message.event, 'insight_card', { popup: message.popup });
+          sendResponse({ received: true });
+          break;
 
-      case 'ARGUS_UPDATE_CONFIRM':
-        console.log(`[Argus] 📝 Update confirm: "${message.eventTitle}" (id: ${message.eventId})`);
-        showModal(
-          { id: message.eventId, title: message.eventTitle },
-          'update_confirm',
-          { description: message.description, changes: message.changes, popup: message.popup }
-        );
-        sendResponse({ received: true });
-        break;
+        case 'ARGUS_UPDATE_CONFIRM':
+          console.log(`[Argus] 📝 Update confirm: "${message.eventTitle}" (id: ${message.eventId})`);
+          showModal(
+            { id: message.eventId, title: message.eventTitle },
+            'update_confirm',
+            { description: message.description, changes: message.changes, popup: message.popup }
+          );
+          sendResponse({ received: true });
+          break;
 
-      case 'ARGUS_FORM_MISMATCH':
-        console.log(`[Argus] ⚠️ Form mismatch from server: entered="${message.entered}", remembered="${message.remembered}"`);
-        showModal(
-          {
-            id: 'form-mismatch-' + Date.now(),
-            title: message.entered + ' → should be ' + message.remembered,
-            description: message.suggestion,
-            event_type: 'form_check',
-          },
-          'form_mismatch',
-          {
-            remembered: message.remembered,
-            entered: message.entered,
-            suggestion: message.suggestion,
-          }
-        );
-        sendResponse({ received: true });
-        break;
+        case 'ARGUS_FORM_MISMATCH':
+          console.log(`[Argus] ⚠️ Form mismatch from server: entered="${message.entered}", remembered="${message.remembered}"`);
+          showModal(
+            {
+              id: 'form-mismatch-' + Date.now(),
+              title: message.entered + ' → should be ' + message.remembered,
+              description: message.suggestion,
+              event_type: 'form_check',
+            },
+            'form_mismatch',
+            {
+              remembered: message.remembered,
+              entered: message.entered,
+              suggestion: message.suggestion,
+            }
+          );
+          sendResponse({ received: true });
+          break;
 
-      case 'ARGUS_ACTION_TOAST':
-        console.log(`[Argus] 🎯 Action toast: "${message.action}" on "${message.eventTitle}"`);
-        const actionEmoji = message.action === 'cancel' || message.action === 'delete' ? '🗑️' :
-                           message.action === 'complete' ? '✅' :
-                           message.action === 'ignore' ? '🚫' :
-                           message.action === 'snooze' || message.action === 'postpone' ? '💤' :
-                           message.action === 'modify' ? '📅' : '✓';
-        showToast(actionEmoji + ' ' + message.action.charAt(0).toUpperCase() + message.action.slice(1), message.message || message.eventTitle);
-        sendResponse({ received: true });
-        break;
+        case 'ARGUS_ACTION_TOAST':
+          console.log(`[Argus] 🎯 Action toast: "${message.action}" on "${message.eventTitle}"`);
+          const actionEmoji = message.action === 'cancel' || message.action === 'delete' ? '🗑️' :
+            message.action === 'complete' ? '✅' :
+              message.action === 'ignore' ? '🚫' :
+                message.action === 'snooze' || message.action === 'postpone' ? '💤' :
+                  message.action === 'modify' ? '📅' : '✓';
+          showToast(actionEmoji + ' ' + message.action.charAt(0).toUpperCase() + message.action.slice(1), message.message || message.eventTitle);
+          sendResponse({ received: true });
+          break;
 
-      default:
-        console.log(`[Argus] ❓ Unknown message type: ${message.type}`);
-        sendResponse({ received: false, error: 'Unknown message type' });
+        default:
+          console.log(`[Argus] ❓ Unknown message type: ${message.type}`);
+          sendResponse({ received: false, error: 'Unknown message type' });
+      }
+    } catch (err) {
+      console.error('[Argus] Popup render error for', message.type + ':', err);
+      // Show a minimal fallback toast so the user knows something happened
+      try {
+        const title = message.event?.title || message.eventTitle || 'Argus notification';
+        showToast('Argus', title);
+      } catch (_) { /* last resort — ignore */ }
+      sendResponse({ received: false, error: 'Render error' });
     }
 
     return true;

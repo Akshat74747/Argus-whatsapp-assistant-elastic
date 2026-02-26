@@ -20,23 +20,26 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // Load stats
 async function loadStats() {
+  const errorBanner = document.getElementById('error-banner');
   try {
     const res = await fetch(API + '/stats');
     if (!res.ok) throw new Error('Stats fetch failed');
     const data = await res.json();
-    
+
     // New = discovered + snoozed (needs attention)
     statNew.textContent = (data.discoveredEvents || 0) + (data.snoozedEvents || 0);
     statScheduled.textContent = data.scheduledEvents || 0;
     statCompleted.textContent = data.completedEvents || 0;
-    
+
     statusDot.classList.remove('error');
     statusDot.classList.add('connected');
     statusText.textContent = 'Connected';
+    if (errorBanner) errorBanner.classList.add('hidden');
   } catch (e) {
     statusDot.classList.remove('connected');
     statusDot.classList.add('error');
     statusText.textContent = 'Offline';
+    if (errorBanner) errorBanner.classList.remove('hidden');
     console.error('[Argus Popup] Stats error:', e);
   }
 }
@@ -124,15 +127,33 @@ function renderEvents(containerId, events, tabType) {
       console.log('[Argus Popup] Action:', action, 'ID:', id);
       
       // Disable button during API call
+      const originalText = this.textContent;
       this.disabled = true;
       this.textContent = '...';
-      
+
+      let actionFailed = false;
       try {
-        await handleEventAction(action, id);
+        const result = await handleEventAction(action, id);
+        if (result && result.error) {
+          actionFailed = true;
+          console.error('[Argus Popup] Action error response:', result.error);
+        }
       } catch (err) {
+        actionFailed = true;
         console.error('[Argus Popup] Action error:', err);
       }
-      
+
+      if (actionFailed) {
+        this.textContent = '❌';
+        this.style.background = '#f87171';
+        setTimeout(() => {
+          this.textContent = originalText;
+          this.style.background = '';
+          this.disabled = false;
+        }, 2000);
+        return;
+      }
+
       // Reload data
       await loadEvents();
       await loadStats();
@@ -188,6 +209,28 @@ function escapeHtml(text) {
   div.textContent = text || '';
   return div.innerHTML;
 }
+
+// Export backup button
+document.getElementById('export-backup').addEventListener('click', async function () {
+  this.disabled = true;
+  this.textContent = 'Exporting...';
+  try {
+    const res = await fetch(API + '/backup/export');
+    if (!res.ok) throw new Error('Export failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `argus-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    this.textContent = 'Downloaded!';
+    setTimeout(() => { this.textContent = 'Export Backup'; this.disabled = false; }, 2000);
+  } catch (e) {
+    this.textContent = 'Failed';
+    setTimeout(() => { this.textContent = 'Export Backup'; this.disabled = false; }, 2000);
+  }
+});
 
 // Initialize
 console.log('[Argus Popup] Initializing...');
