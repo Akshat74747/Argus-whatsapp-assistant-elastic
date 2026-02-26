@@ -19,9 +19,16 @@ docker compose logs -f argus   # View Argus logs
 ### Local Development
 
 ```bash
+cd evolution-api
+npm install
+cp .env.example .env           # Fill in api key given below in configurations (only one time when starting for the first time)
+npm run dev:server                   # Hot-reload dev server on :3000
+```
+
+```bash
 cd argus
 npm install
-cp .env.example .env           # Fill in GEMINI_API_KEY + Elasticsearch credentials
+cp .env.example .env           # Fill in GEMINI_API_KEY + Elasticsearch credentials (only one time when starting for the first time)
 npm run dev                    # Hot-reload dev server on :3000
 ```
 
