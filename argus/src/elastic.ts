@@ -1,12 +1,14 @@
 import { Client } from '@elastic/elasticsearch';
 import type { Message, Event, Trigger, Contact, TriggerType } from './types.js';
+import { generateEmbedding, buildEventEmbeddingText } from './embeddings.js';
+import { safeAsync } from './errors.js';
 
 // ============ Client Setup ============
 let client: Client | null = null;
 let eventIdCounter = 0;
 let triggerIdCounter = 0;
 
-const INDICES = {
+export const INDICES = {
   events: 'argus-events',
   messages: 'argus-messages',
   triggers: 'argus-triggers',
@@ -15,7 +17,7 @@ const INDICES = {
   pushSubscriptions: 'argus-push-subscriptions',
 } as const;
 
-function getClient(): Client {
+export function getClient(): Client {
   if (!client) {
     throw new Error('Elasticsearch not initialized. Call initElastic() first.');
   }
@@ -62,6 +64,7 @@ async function ensureIndices(): Promise<void> {
           location: { type: 'text', fields: { keyword: { type: 'keyword' } } },
           participants: { type: 'text' },
           keywords: { type: 'text', fields: { keyword: { type: 'keyword' } } },
+          embedding: { type: 'dense_vector', dims: 768, index: true, similarity: 'cosine' },
           confidence: { type: 'float' },
           status: { type: 'keyword' },
           reminder_time: { type: 'long' },
@@ -73,6 +76,20 @@ async function ensureIndices(): Promise<void> {
       },
     });
     console.log('📦 Created index:', INDICES.events);
+  } else {
+    // Add embedding field to existing index (no-op if already present)
+    try {
+      await es.indices.putMapping({
+        index: INDICES.events,
+        properties: {
+          embedding: { type: 'dense_vector', dims: 768, index: true, similarity: 'cosine' },
+        } as any,
+      });
+      console.log('📦 Ensured embedding field on existing index:', INDICES.events);
+    } catch (err) {
+      // May fail if mapping already exists with same definition — safe to ignore
+      console.warn('⚠️ Could not add embedding field (may already exist):', (err as Error).message?.slice(0, 100));
+    }
   }
 
   // Messages index
@@ -151,7 +168,7 @@ async function ensureIndices(): Promise<void> {
   }
 }
 
-async function initIdCounters(): Promise<void> {
+export async function initIdCounters(): Promise<void> {
   const es = getClient();
 
   // Get max event ID
@@ -215,20 +232,27 @@ function mapEvent(source: Record<string, any>): Event {
 
 // ============ Message Operations ============
 export async function insertMessage(msg: Message): Promise<void> {
-  const es = getClient();
-  await es.index({
-    index: INDICES.messages,
-    id: msg.id,
-    document: {
-      id: msg.id,
-      chat_id: msg.chat_id,
-      sender: msg.sender,
-      content: msg.content,
-      timestamp: msg.timestamp,
-      created_at: Math.floor(Date.now() / 1000),
+  await safeAsync(
+    async () => {
+      const es = getClient();
+      await es.index({
+        index: INDICES.messages,
+        id: msg.id,
+        document: {
+          id: msg.id,
+          chat_id: msg.chat_id,
+          sender: msg.sender,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          created_at: Math.floor(Date.now() / 1000),
+        },
+        refresh: true,
+      });
     },
-    refresh: true,
-  });
+    undefined,
+    'insertMessage',
+    { deadLetter: true, payload: msg }
+  );
 }
 
 export async function getRecentMessages(chatId: string, limit = 5): Promise<Message[]> {
@@ -304,35 +328,57 @@ export async function findDuplicateEvent(title: string, hoursWindow: number = 48
 }
 
 export async function insertEvent(event: Omit<Event, 'id' | 'created_at'>): Promise<number> {
-  const es = getClient();
-  const id = nextEventId();
-  const now = Math.floor(Date.now() / 1000);
+  return safeAsync(
+    async () => {
+      const es = getClient();
+      const id = nextEventId();
+      const now = Math.floor(Date.now() / 1000);
 
-  await es.index({
-    index: INDICES.events,
-    id: String(id),
-    document: {
-      id,
-      message_id: event.message_id,
-      event_type: event.event_type,
-      title: event.title,
-      description: event.description,
-      event_time: event.event_time,
-      location: event.location,
-      participants: event.participants,
-      keywords: event.keywords,
-      confidence: event.confidence,
-      status: event.status || 'discovered',
-      context_url: event.context_url || null,
-      sender_name: event.sender_name || null,
-      reminder_time: null,
-      dismiss_count: 0,
-      created_at: now,
+      // Generate embedding for kNN hybrid search (silent failure — BM25-only fallback)
+      const embeddingText = buildEventEmbeddingText({
+        title: event.title,
+        description: event.description,
+        keywords: event.keywords,
+        location: event.location,
+      });
+      const embedding = await generateEmbedding(embeddingText);
+      if (embedding) {
+        console.log(`🔢 [ES] Generated embedding (${embedding.length} dims) for event: "${event.title}"`);
+      } else {
+        console.log(`⚠️ [ES] No embedding for event "${event.title}" — BM25-only search until backfill`);
+      }
+
+      await es.index({
+        index: INDICES.events,
+        id: String(id),
+        document: {
+          id,
+          message_id: event.message_id,
+          event_type: event.event_type,
+          title: event.title,
+          description: event.description,
+          event_time: event.event_time,
+          location: event.location,
+          participants: event.participants,
+          keywords: event.keywords,
+          embedding,           // null if generation failed — ES accepts null for dense_vector
+          confidence: event.confidence,
+          status: event.status || 'discovered',
+          context_url: event.context_url || null,
+          sender_name: event.sender_name || null,
+          reminder_time: null,
+          dismiss_count: 0,
+          created_at: now,
+        },
+        refresh: true,
+      });
+
+      return id;
     },
-    refresh: true,
-  });
-
-  return id;
+    -1,
+    'insertEvent',
+    { deadLetter: true, payload: event }
+  );
 }
 
 export async function getEventById(id: number): Promise<Event | undefined> {
@@ -376,14 +422,21 @@ export async function getRecentEvents(days = 90, limit = 100): Promise<Event[]> 
 }
 
 export async function updateEventStatus(id: number, status: EventStatus): Promise<void> {
-  const es = getClient();
-  await es.update({
-    index: INDICES.events,
-    id: String(id),
-    doc: { status },
-    refresh: true,
-  });
-  console.log(`📝 [ES] Event ${id} status → ${status}`);
+  await safeAsync(
+    async () => {
+      const es = getClient();
+      await es.update({
+        index: INDICES.events,
+        id: String(id),
+        doc: { status },
+        refresh: true,
+      });
+      console.log(`📝 [ES] Event ${id} status → ${status}`);
+    },
+    undefined,
+    'updateEventStatus',
+    { deadLetter: true, payload: { id, status } }
+  );
 }
 
 // ============ Search Operations ============
@@ -449,28 +502,126 @@ export async function searchEventsByKeywords(keywords: string[], days = 90, limi
   return res.hits.hits.map(h => mapEvent(h._source as Record<string, any>));
 }
 
+// ============ Hybrid Search (kNN + BM25) ============
+
+/**
+ * Combines kNN vector search (semantic) with BM25 keyword search.
+ * Falls back to BM25-only if queryVector is null (embedding not available).
+ * ES merges scores via Reciprocal Rank Fusion (RRF) when both are provided.
+ */
+export async function hybridSearchEvents(
+  queryText: string,
+  queryVector: number[] | null,
+  days = 90,
+  limit = 10
+): Promise<Event[]> {
+  const es = getClient();
+  const cutoff = Math.floor(Date.now() / 1000) - days * 24 * 60 * 60;
+
+  const bm25Query = {
+    bool: {
+      must: [
+        {
+          multi_match: {
+            query: queryText,
+            fields: ['title^3', 'keywords^2', 'description', 'location'],
+            type: 'best_fields' as const,
+            fuzziness: 'AUTO',
+          },
+        },
+      ],
+      filter: [
+        { terms: { status: ['pending', 'scheduled', 'discovered'] } },
+        { range: { created_at: { gte: cutoff } } },
+      ],
+    },
+  };
+
+  const searchParams: Record<string, unknown> = {
+    index: INDICES.events,
+    size: limit,
+    query: bm25Query,
+    sort: [{ _score: { order: 'desc' } }],
+  };
+
+  if (queryVector && queryVector.length > 0) {
+    searchParams.knn = {
+      field: 'embedding',
+      query_vector: queryVector,
+      k: limit,
+      num_candidates: 50,
+      filter: { terms: { status: ['pending', 'scheduled', 'discovered'] } },
+    };
+  }
+
+  try {
+    const res = await es.search(searchParams as any);
+    return res.hits.hits.map(h => mapEvent(h._source as Record<string, any>));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`❌ [hybridSearchEvents] ${msg}`);
+    return [];
+  }
+}
+
+// ============ Embedding Backfill Helpers ============
+
+/** Returns events that have no embedding (for backfill after Gemini outage). */
+export async function getEventsWithoutEmbeddings(limit = 50): Promise<Event[]> {
+  const es = getClient();
+  const res = await es.search({
+    index: INDICES.events,
+    size: limit,
+    query: {
+      bool: {
+        must_not: [{ exists: { field: 'embedding' } }],
+      },
+    } as any,
+    sort: [{ created_at: 'desc' }],
+  });
+  return res.hits.hits.map(h => mapEvent(h._source as Record<string, any>));
+}
+
+/** Stores a generated embedding on an existing event document. */
+export async function updateEventEmbedding(eventId: number, embedding: number[]): Promise<void> {
+  const es = getClient();
+  await es.update({
+    index: INDICES.events,
+    id: String(eventId),
+    doc: { embedding },
+    refresh: false, // No need for immediate refresh during backfill
+  });
+}
+
 // ============ Trigger Operations ============
 export async function insertTrigger(trigger: Omit<Trigger, 'id' | 'created_at'>): Promise<number> {
-  const es = getClient();
-  const id = nextTriggerId();
-  const now = Math.floor(Date.now() / 1000);
+  return safeAsync(
+    async () => {
+      const es = getClient();
+      const id = nextTriggerId();
+      const now = Math.floor(Date.now() / 1000);
 
-  await es.index({
-    index: INDICES.triggers,
-    id: String(id),
-    document: {
-      id,
-      event_id: trigger.event_id,
-      trigger_type: trigger.trigger_type,
-      trigger_value: trigger.trigger_value,
-      is_fired: trigger.is_fired ? true : false,
-      fire_count: 0,
-      created_at: now,
+      await es.index({
+        index: INDICES.triggers,
+        id: String(id),
+        document: {
+          id,
+          event_id: trigger.event_id,
+          trigger_type: trigger.trigger_type,
+          trigger_value: trigger.trigger_value,
+          is_fired: trigger.is_fired ? true : false,
+          fire_count: 0,
+          created_at: now,
+        },
+        refresh: true,
+      });
+
+      return id;
     },
-    refresh: true,
-  });
-
-  return id;
+    -1,
+    'insertTrigger',
+    { deadLetter: true, payload: trigger }
+  );
 }
 
 export async function getUnfiredTriggersByType(type: string): Promise<Trigger[]> {
@@ -783,62 +934,75 @@ export async function updateEvent(eventId: number, fields: {
   status?: string;
   sender_name?: string | null;
 }): Promise<boolean> {
-  const event = await getEventById(eventId);
-  if (!event) {
-    console.log(`❌ [ES] updateEvent: Event ${eventId} not found`);
-    return false;
-  }
+  return safeAsync(
+    async () => {
+      const event = await getEventById(eventId);
+      if (!event) {
+        console.log(`❌ [ES] updateEvent: Event ${eventId} not found`);
+        return false;
+      }
 
-  const doc: Record<string, any> = {};
-  if (fields.title !== undefined) doc.title = fields.title;
-  if (fields.description !== undefined) doc.description = fields.description;
-  if (fields.event_time !== undefined) doc.event_time = fields.event_time;
-  if (fields.location !== undefined) doc.location = fields.location;
-  if (fields.keywords !== undefined) doc.keywords = fields.keywords;
-  if (fields.context_url !== undefined) doc.context_url = fields.context_url;
-  if (fields.event_type !== undefined) doc.event_type = fields.event_type;
-  if (fields.participants !== undefined) doc.participants = fields.participants;
-  if (fields.status !== undefined) doc.status = fields.status;
-  if (fields.sender_name !== undefined) doc.sender_name = fields.sender_name;
+      const doc: Record<string, any> = {};
+      if (fields.title !== undefined) doc.title = fields.title;
+      if (fields.description !== undefined) doc.description = fields.description;
+      if (fields.event_time !== undefined) doc.event_time = fields.event_time;
+      if (fields.location !== undefined) doc.location = fields.location;
+      if (fields.keywords !== undefined) doc.keywords = fields.keywords;
+      if (fields.context_url !== undefined) doc.context_url = fields.context_url;
+      if (fields.event_type !== undefined) doc.event_type = fields.event_type;
+      if (fields.participants !== undefined) doc.participants = fields.participants;
+      if (fields.status !== undefined) doc.status = fields.status;
+      if (fields.sender_name !== undefined) doc.sender_name = fields.sender_name;
 
-  if (Object.keys(doc).length === 0) {
-    console.log(`⏭️ [ES] updateEvent: No fields to update for event ${eventId}`);
-    return false;
-  }
+      if (Object.keys(doc).length === 0) {
+        console.log(`⏭️ [ES] updateEvent: No fields to update for event ${eventId}`);
+        return false;
+      }
 
-  const es = getClient();
-  await es.update({
-    index: INDICES.events,
-    id: String(eventId),
-    doc,
-    refresh: true,
-  });
+      const es = getClient();
+      await es.update({
+        index: INDICES.events,
+        id: String(eventId),
+        doc,
+        refresh: true,
+      });
 
-  const changedFields = Object.keys(doc).join(', ');
-  console.log(`📝 [ES] Event ${eventId} updated: [${changedFields}]`);
-  return true;
+      const changedFields = Object.keys(doc).join(', ');
+      console.log(`📝 [ES] Event ${eventId} updated: [${changedFields}]`);
+      return true;
+    },
+    false,
+    'updateEvent',
+    { deadLetter: true, payload: { eventId, fields } }
+  );
 }
 
 export async function deleteEvent(id: number): Promise<void> {
-  const es = getClient();
-  // Delete associated triggers
-  await es.deleteByQuery({
-    index: INDICES.triggers,
-    query: { term: { event_id: id } },
-    refresh: true,
-  });
-  // Delete context dismissals
-  await es.deleteByQuery({
-    index: INDICES.contextDismissals,
-    query: { term: { event_id: id } },
-    refresh: true,
-  });
-  // Delete the event
-  try {
-    await es.delete({ index: INDICES.events, id: String(id), refresh: true });
-  } catch {
-    // Already deleted
-  }
+  await safeAsync(
+    async () => {
+      const es = getClient();
+      // Delete associated triggers
+      await es.deleteByQuery({
+        index: INDICES.triggers,
+        query: { term: { event_id: id } },
+        refresh: true,
+      });
+      // Delete context dismissals
+      await es.deleteByQuery({
+        index: INDICES.contextDismissals,
+        query: { term: { event_id: id } },
+        refresh: true,
+      });
+      // Delete the event
+      try {
+        await es.delete({ index: INDICES.events, id: String(id), refresh: true });
+      } catch {
+        // Already deleted
+      }
+    },
+    undefined,
+    'deleteEvent'
+  );
 }
 
 // ============ Enhanced Event Operations ============

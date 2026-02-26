@@ -13,7 +13,46 @@ let contextCheckTimer = null;
 // Store dismissed context reminders temporarily (per session)
 const dismissedEvents = new Map(); // eventId -> timestamp
 
+// Track which discovered events have already been notified this session.
+// Uses chrome.storage.session so it survives service worker restarts.
+async function isAlreadyNotified(eventId) {
+  try {
+    const data = await chrome.storage.session.get('notifiedIds');
+    return (data.notifiedIds || []).includes(eventId);
+  } catch { return false; }
+}
+
+async function markNotified(eventId) {
+  try {
+    const data = await chrome.storage.session.get('notifiedIds');
+    const ids = data.notifiedIds || [];
+    if (!ids.includes(eventId)) {
+      ids.push(eventId);
+      if (ids.length > 200) ids.splice(0, ids.length - 200); // cap size
+      await chrome.storage.session.set({ notifiedIds: ids });
+    }
+  } catch (e) { console.error('[Argus] markNotified error:', e); }
+}
+
 // ============ UTILITY FUNCTIONS ============
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  if (typeof AbortController === 'undefined') return fetch(url, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      const e = new Error('Request timed out after ' + timeoutMs + 'ms');
+      e.name = 'TimeoutError';
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function debounce(func, wait) {
   return function executedFunction(...args) {
@@ -40,6 +79,36 @@ function dismissEvent(eventId) {
   console.log('[Argus] Event #' + eventId + ' dismissed for 30 min');
 }
 
+// ============ PENDING EVENT RECOVERY ============
+// Fetches any 'discovered' events not yet notified and shows popups for them.
+// Called on WS connect/reconnect and periodically as a fallback.
+
+async function fetchAndShowDiscoveredEvents() {
+  try {
+    const res = await fetchWithTimeout(API_BASE + '/api/events?status=discovered&limit=20');
+    if (!res.ok) return;
+    const events = await res.json();
+    if (!events || events.length === 0) return;
+
+    for (const event of events) {
+      if (!event.id) continue;
+      if (await isAlreadyNotified(event.id)) continue;
+      console.log('[Argus] 🔔 Recovered unnotified event #' + event.id + ':', event.title);
+      const sent = await sendToFirstAvailableTab({ type: 'ARGUS_NEW_EVENT', event, popup: null });
+      if (sent) {
+        await markNotified(event.id);
+        if (events.indexOf(event) < events.length - 1) {
+          await new Promise(r => setTimeout(r, 800));
+        }
+      } else {
+        console.log('[Argus] ⚠️ No tab available for event #' + event.id + ', will retry on next poll');
+      }
+    }
+  } catch (e) {
+    console.error('[Argus] fetchAndShowDiscoveredEvents error:', e.message);
+  }
+}
+
 // ============ WEBSOCKET CONNECTION ============
 
 function connectWebSocket() {
@@ -51,6 +120,9 @@ function connectWebSocket() {
     ws.onopen = function() {
       console.log('[Argus] WebSocket connected');
       reconnectAttempts = 0;
+      // Delay slightly so any pending real-time broadcasts arrive and take priority.
+      // Recovery poll only catches what the real-time path missed.
+      setTimeout(fetchAndShowDiscoveredEvents, 3000);
     };
     
     ws.onmessage = function(event) {
@@ -87,17 +159,18 @@ async function handleWebSocketMessage(data) {
   switch (data.type) {
     case 'notification':
       console.log('[Argus] New event:', data.event?.title);
-      await sendToFirstAvailableTab({ type: 'ARGUS_NEW_EVENT', event: data.event, popup });
+      if (await sendToFirstAvailableTab({ type: 'ARGUS_NEW_EVENT', event: data.event, popup })) {
+        if (data.event?.id) await markNotified(data.event.id);
+      } else {
+        console.log('[Argus] ⚠️ Real-time send failed for event #' + data.event?.id + ', recovery poll will retry');
+      }
       break;
-      
+
     case 'conflict_warning':
       console.log('[Argus] Conflict:', data.event?.title);
-      await sendToFirstAvailableTab({
-        type: 'ARGUS_CONFLICT',
-        event: data.event,
-        conflictingEvents: data.conflictingEvents,
-        popup,
-      });
+      if (await sendToFirstAvailableTab({ type: 'ARGUS_CONFLICT', event: data.event, conflictingEvents: data.conflictingEvents, popup })) {
+        if (data.event?.id) await markNotified(data.event.id);
+      }
       break;
       
     case 'trigger':
@@ -200,8 +273,8 @@ async function trySendToTab(tabId, message) {
     try {
       console.log('[Argus] Content script not ready on tab ' + tabId + ', injecting...');
       await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-      // Wait longer for content script to fully initialize (set up listeners)
-      await new Promise(r => setTimeout(r, 500));
+      // Wait for content script to fully initialize and register its listeners
+      await new Promise(r => setTimeout(r, 1000));
       await chrome.tabs.sendMessage(tabId, message);
       console.log('[Argus] ✅ Sent after injecting content script on tab ' + tabId);
       return true;
@@ -251,11 +324,11 @@ async function checkCurrentUrl(url, title) {
   console.log('[Argus] Context check:', url.substring(0, 50));
 
   try {
-    const response = await fetch(API_BASE + '/api/context-check', {
+    const response = await fetchWithTimeout(API_BASE + '/api/context-check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, title }),
-    });
+    }, 8000);
 
     if (!response.ok) return;
     const result = await response.json();
@@ -276,7 +349,11 @@ async function checkCurrentUrl(url, title) {
       }
     }
   } catch (error) {
-    console.error('[Argus] Context error:', error.message);
+    if (error && error.name === 'TimeoutError') {
+      console.warn('[Argus] Context check timed out for:', url.substring(0, 50));
+    } else {
+      console.error('[Argus] Context error:', error.message);
+    }
   }
 }
 
@@ -310,14 +387,14 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
       switch (message.type) {
         case 'SET_REMINDER':
           console.log('[Argus] API: set-reminder for event', message.eventId);
-          const setRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/set-reminder', { method: 'POST' });
+          const setRes = await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId + '/set-reminder', { method: 'POST' });
           const setData = await setRes.json();
           console.log('[Argus] API response:', setData);
           return setData;
           
         case 'SNOOZE_EVENT':
           console.log('[Argus] API: snooze for event', message.eventId);
-          const snoozeRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/snooze', {
+          const snoozeRes = await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId + '/snooze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ minutes: message.minutes || 30 }),
@@ -328,18 +405,18 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
           
         case 'IGNORE_EVENT':
           console.log('[Argus] API: ignore for event', message.eventId);
-          const ignoreRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/ignore', { method: 'POST' });
+          const ignoreRes = await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId + '/ignore', { method: 'POST' });
           const ignoreData = await ignoreRes.json();
           console.log('[Argus] API response:', ignoreData);
           return ignoreData;
           
         case 'ACKNOWLEDGE_REMINDER':
-          return await (await fetch(API_BASE + '/api/events/' + message.eventId + '/acknowledge', { method: 'POST' })).json();
+          return await (await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId + '/acknowledge', { method: 'POST' })).json();
           
         case 'MARK_DONE':
         case 'COMPLETE_EVENT':
           console.log('[Argus] API: complete for event', message.eventId);
-          const completeRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/complete', { method: 'POST' });
+          const completeRes = await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId + '/complete', { method: 'POST' });
           const completeData = await completeRes.json();
           console.log('[Argus] API response:', completeData);
           return completeData;
@@ -347,7 +424,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         case 'DISMISS_EVENT':
           console.log('[Argus] API: dismiss for event', message.eventId);
           if (!message.permanent) dismissEvent(message.eventId);
-          const dismissRes = await fetch(API_BASE + '/api/events/' + message.eventId + '/dismiss', {
+          const dismissRes = await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId + '/dismiss', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ permanent: message.permanent, urlPattern: message.url }),
@@ -358,11 +435,11 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
           
         case 'DELETE_EVENT':
           console.log('[Argus] API: delete for event', message.eventId);
-          return await (await fetch(API_BASE + '/api/events/' + message.eventId, { method: 'DELETE' })).json();
+          return await (await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId, { method: 'DELETE' })).json();
 
         case 'UPDATE_EVENT':
           console.log('[Argus] API: update for event', message.eventId, message.fields);
-          const updateRes = await fetch(API_BASE + '/api/events/' + message.eventId, {
+          const updateRes = await fetchWithTimeout(API_BASE + '/api/events/' + message.eventId, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(message.fields || {}),
@@ -374,14 +451,14 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
           return { success: true };
           
         case 'GET_STATS':
-          return await (await fetch(API_BASE + '/api/stats')).json();
+          return await (await fetchWithTimeout(API_BASE + '/api/stats')).json();
 
         case 'GET_EVENTS':
-          return await (await fetch(API_BASE + '/api/events?limit=10')).json();
+          return await (await fetchWithTimeout(API_BASE + '/api/events?limit=10')).json();
 
         case 'GET_DAY_EVENTS':
           console.log('[Argus] API: get day events for timestamp', message.timestamp);
-          const dayRes = await fetch(API_BASE + '/api/events/day/' + message.timestamp);
+          const dayRes = await fetchWithTimeout(API_BASE + '/api/events/day/' + message.timestamp);
           return await dayRes.json();
 
         default:
@@ -389,6 +466,18 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
           return { error: 'Unknown message type: ' + message.type };
       }
     } catch (error) {
+      if (error && error.name === 'TimeoutError') {
+        console.warn('[Argus] API timeout:', error.message);
+        return { error: 'Server not responding', timeout: true };
+      }
+      const isOffline = error && (
+        error.message?.includes('Failed to fetch') ||
+        error.message?.includes('NetworkError') ||
+        error.message?.includes('ERR_CONNECTION_REFUSED')
+      );
+      if (isOffline) {
+        return { error: 'Cannot reach Argus server', offline: true };
+      }
       console.error('[Argus] API error:', error);
       return { error: error.message };
     }
@@ -429,7 +518,27 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
 chrome.runtime.onInstalled.addListener(function() {
   console.log('[Argus] Extension installed');
   connectWebSocket();
+  chrome.alarms.create('argusKeepAlive', { periodInMinutes: 0.4 });
+});
+
+chrome.runtime.onStartup.addListener(function() {
+  connectWebSocket();
+  chrome.alarms.create('argusKeepAlive', { periodInMinutes: 0.4 });
+});
+
+// MV3 keepalive: Chrome terminates service workers after inactivity.
+// This alarm fires every ~24s to keep the SW alive, check the WS, and run recovery.
+chrome.alarms.onAlarm.addListener(function(alarm) {
+  if (alarm.name !== 'argusKeepAlive') return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.log('[Argus] ⏰ Alarm: WS not open, reconnecting...');
+    connectWebSocket();
+  }
+  // Recovery poll — safe to run every alarm because storage.session deduplicates
+  fetchAndShowDiscoveredEvents();
 });
 
 connectWebSocket();
+chrome.alarms.create('argusKeepAlive', { periodInMinutes: 0.4 });
+
 console.log('[Argus] Background v2.6.1 loaded');

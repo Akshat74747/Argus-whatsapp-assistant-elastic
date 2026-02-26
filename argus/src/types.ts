@@ -169,6 +169,13 @@ export const ConfigSchema = z.object({
   processOwnMessages: z.boolean().default(true),
   skipGroupMessages: z.boolean().default(false),
   hotWindowDays: z.number().default(90),
+  // AI Fallback Tier config
+  aiTierMode: z.enum(['auto', 'tier1_only', 'tier2_only', 'tier3_only']).default('auto'),
+  aiCooldownBaseSec: z.number().default(30),
+  aiCacheTtlSec: z.number().default(3600),
+  aiCacheMaxSize: z.number().default(500),
+  geminiEmbeddingModel: z.string().default('gemini-embedding-001'),
+  backupRetentionDays: z.number().default(7),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -199,5 +206,11 @@ export function parseConfig(): Config {
     processOwnMessages: process.env.PROCESS_OWN_MESSAGES !== 'false',
     skipGroupMessages: process.env.SKIP_GROUP_MESSAGES === 'true',
     hotWindowDays: parseInt(process.env.HOT_WINDOW_DAYS || '90'),
+    aiTierMode: (process.env.AI_TIER_MODE as any) || 'auto',
+    aiCooldownBaseSec: parseInt(process.env.AI_COOLDOWN_BASE_SEC || '30'),
+    aiCacheTtlSec: parseInt(process.env.AI_CACHE_TTL_SEC || '3600'),
+    aiCacheMaxSize: parseInt(process.env.AI_CACHE_MAX_SIZE || '500'),
+    geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004',
+    backupRetentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '7'),
   });
 }

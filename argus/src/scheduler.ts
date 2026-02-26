@@ -9,6 +9,8 @@ import {
   checkEventConflicts,
   getDueSnoozedEvents
 } from './elastic.js';
+import { runDailyBackup, pruneOldBackups } from './backup.js';
+import { logFailedReminder } from './errors.js';
 
 // Extended notification with popup type
 interface NotificationPayload {
@@ -25,13 +27,43 @@ interface NotificationPayload {
 
 type NotifyCallback = (event: NotificationPayload) => void | Promise<void>;
 
+// ============ Retry Queue ============
+
+interface RetryItem {
+  payload: NotificationPayload;
+  attempt: number;        // 0 = first retry, 1 = second, 2 = third
+  nextRetryAt: number;    // Unix ms timestamp
+  reason: string;
+  markFn: () => Promise<void>;  // called on successful delivery
+}
+
+const retryQueue: RetryItem[] = [];
+const BACKOFF_MS = [60_000, 300_000, 900_000] as const;  // 1m, 5m, 15m
+const MAX_ATTEMPTS = 3;
+
+let failedReminderCount = 0;
+
+export function getRetryQueueSize(): number {
+  return retryQueue.length;
+}
+
+export function getFailedReminderCount(): number {
+  return failedReminderCount;
+}
+
+// ============ Scheduler State ============
+
 let schedulerInterval: NodeJS.Timeout | null = null;
 let reminderInterval: NodeJS.Timeout | null = null;
 let snoozeInterval: NodeJS.Timeout | null = null;
+let backupInterval: NodeJS.Timeout | null = null;
 let notifyCallback: NotifyCallback | null = null;
 
-export function startScheduler(callback: NotifyCallback, intervalMs = 60000): void {
+let backupRetentionDays = 7;
+
+export function startScheduler(callback: NotifyCallback, intervalMs = 60000, retentionDays = 7): void {
   notifyCallback = callback;
+  backupRetentionDays = retentionDays;
 
   // Run immediately
   checkTimeTriggers();
@@ -40,36 +72,117 @@ export function startScheduler(callback: NotifyCallback, intervalMs = 60000): vo
 
   // Then run periodically
   schedulerInterval = setInterval(checkTimeTriggers, intervalMs);
-  reminderInterval = setInterval(checkDueReminders, 30000);
+  // Piggyback processRetryQueue on the 30s reminder interval
+  reminderInterval = setInterval(async () => {
+    await checkDueReminders();
+    await processRetryQueue();
+  }, 30000);
   snoozeInterval = setInterval(checkSnoozedEvents, 30000);
 
-  console.log('⏰ Scheduler started (triggers every', intervalMs / 1000, 's, reminders/snooze every 30s)');
+  // Daily backup: first run 60s after start, then every 24h
+  setTimeout(() => {
+    runScheduledBackup();
+    backupInterval = setInterval(runScheduledBackup, 24 * 60 * 60 * 1000);
+  }, 60 * 1000);
+
+  console.log('⏰ Scheduler started (triggers every', intervalMs / 1000, 's, reminders/snooze every 30s, backup daily)');
+}
+
+async function runScheduledBackup(): Promise<void> {
+  try {
+    await runDailyBackup();
+    await pruneOldBackups(backupRetentionDays);
+  } catch (err) {
+    console.warn('[Scheduler] Daily backup failed:', (err as Error).message);
+  }
 }
 
 export function stopScheduler(): void {
-  if (schedulerInterval) {
-    clearInterval(schedulerInterval);
-    schedulerInterval = null;
-  }
-  if (reminderInterval) {
-    clearInterval(reminderInterval);
-    reminderInterval = null;
-  }
-  if (snoozeInterval) {
-    clearInterval(snoozeInterval);
-    snoozeInterval = null;
-  }
+  if (schedulerInterval) { clearInterval(schedulerInterval); schedulerInterval = null; }
+  if (reminderInterval)  { clearInterval(reminderInterval);  reminderInterval  = null; }
+  if (snoozeInterval)    { clearInterval(snoozeInterval);    snoozeInterval    = null; }
+  if (backupInterval)    { clearInterval(backupInterval);    backupInterval    = null; }
   console.log('⏰ Scheduler stopped');
 }
 
-// Check for snoozed events that are due
+// ============ safeNotify ============
+
+/**
+ * Wraps notifyCallback in try-catch.
+ * Returns true on success, false if the callback throws or is not set.
+ */
+async function safeNotify(payload: NotificationPayload): Promise<boolean> {
+  if (!notifyCallback) return false;
+  try {
+    await notifyCallback(payload);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Scheduler] Notify failed for "${payload.title}" (id: ${payload.id}): ${msg}`);
+    return false;
+  }
+}
+
+// ============ Retry Queue Logic ============
+
+/**
+ * Adds a failed notification to the retry queue with exponential backoff.
+ * If MAX_ATTEMPTS is reached, logs to data/failed-reminders.jsonl instead.
+ */
+function scheduleRetry(
+  payload: NotificationPayload,
+  reason: string,
+  attempt: number,
+  markFn: () => Promise<void>
+): void {
+  if (attempt >= MAX_ATTEMPTS) {
+    failedReminderCount++;
+    logFailedReminder(payload, attempt, reason);
+    return;
+  }
+  const delayMs = BACKOFF_MS[attempt];
+  retryQueue.push({ payload, attempt, nextRetryAt: Date.now() + delayMs, reason, markFn });
+  console.warn(`[Scheduler] Retry #${attempt + 1}/${MAX_ATTEMPTS} queued for "${payload.title}" in ${delayMs / 1000}s`);
+}
+
+/**
+ * Processes all due retry items.
+ * Called every 30s, piggybacked on reminderInterval.
+ */
+async function processRetryQueue(): Promise<void> {
+  const now = Date.now();
+  // Iterate in reverse so splice doesn't skip items
+  for (let i = retryQueue.length - 1; i >= 0; i--) {
+    const item = retryQueue[i];
+    if (item.nextRetryAt > now) continue;
+
+    retryQueue.splice(i, 1);  // Remove before attempting to avoid double-fire
+
+    const success = await safeNotify(item.payload);
+    if (success) {
+      try {
+        await item.markFn();
+      } catch (err) {
+        console.error(`[Scheduler] markFn failed after retry success for "${item.payload.title}":`, err);
+      }
+      console.log(`[Scheduler] Retry #${item.attempt + 1} succeeded for "${item.payload.title}"`);
+    } else {
+      scheduleRetry(item.payload, item.reason, item.attempt + 1, item.markFn);
+    }
+  }
+}
+
+// ============ Snoozed Events ============
+
 async function checkSnoozedEvents(): Promise<void> {
   try {
     const dueEvents = await getDueSnoozedEvents();
 
     for (const event of dueEvents) {
-      if (notifyCallback && event.id) {
-        notifyCallback({
+      if (!event.id) continue;
+
+      if (notifyCallback) {
+        const payload: NotificationPayload = {
           id: event.id,
           title: event.title,
           description: event.description,
@@ -78,10 +191,19 @@ async function checkSnoozedEvents(): Promise<void> {
           event_type: event.event_type,
           triggerType: 'snooze',
           popupType: 'event_discovery',
-        });
+        };
 
-        console.log(`💤 Snoozed event due: ${event.title}`);
-
+        const success = await safeNotify(payload);
+        if (success) {
+          console.log(`💤 Snoozed event due: ${event.title}`);
+          await updateEventStatus(event.id, 'discovered');
+        } else {
+          // Keep event in snoozed state until delivery succeeds
+          const id = event.id;
+          scheduleRetry(payload, 'callback_failed', 0, async () => updateEventStatus(id, 'discovered'));
+        }
+      } else {
+        // No callback registered — still unsnooze the event
         await updateEventStatus(event.id, 'discovered');
       }
     }
@@ -90,14 +212,17 @@ async function checkSnoozedEvents(): Promise<void> {
   }
 }
 
-// Check for 1-hour-before reminders
+// ============ Due Reminders (1-hour-before) ============
+
 async function checkDueReminders(): Promise<void> {
   try {
     const dueReminders = await getDueReminders();
 
     for (const event of dueReminders) {
-      if (notifyCallback && event.id) {
-        notifyCallback({
+      if (!event.id) continue;
+
+      if (notifyCallback) {
+        const payload: NotificationPayload = {
           id: event.id,
           title: event.title,
           description: event.description,
@@ -106,12 +231,18 @@ async function checkDueReminders(): Promise<void> {
           event_type: event.event_type,
           triggerType: 'reminder_1hr',
           popupType: 'event_reminder',
-        });
+        };
 
-        console.log(`🔔 1-hour reminder fired: ${event.title}`);
-      }
-
-      if (event.id) {
+        const success = await safeNotify(payload);
+        if (success) {
+          console.log(`🔔 1-hour reminder fired: ${event.title}`);
+          await markEventReminded(event.id);
+        } else {
+          const id = event.id;
+          scheduleRetry(payload, 'callback_failed', 0, async () => markEventReminded(id));
+        }
+      } else {
+        // No callback — still mark reminded so it doesn't re-fire
         await markEventReminded(event.id);
       }
     }
@@ -119,6 +250,8 @@ async function checkDueReminders(): Promise<void> {
     console.error('Scheduler: checkDueReminders error:', err);
   }
 }
+
+// ============ Context Triggers ============
 
 // Check for context URL triggers (called when user visits a URL)
 export async function checkContextTriggers(url: string): Promise<NotificationPayload[]> {
@@ -176,6 +309,8 @@ export async function checkCalendarConflicts(eventId: number, eventTime: number)
   };
 }
 
+// ============ Time Triggers ============
+
 async function checkTimeTriggers(): Promise<void> {
   try {
     const now = Date.now();
@@ -194,23 +329,29 @@ async function checkTimeTriggers(): Promise<void> {
           const event = await getEventById(trigger.event_id);
 
           if (event && (event.status === 'pending' || event.status === 'scheduled' || event.status === 'discovered' || event.status === 'reminded')) {
-            if (notifyCallback) {
-              notifyCallback({
-                id: event.id!,
-                title: event.title,
-                description: event.description,
-                event_time: event.event_time,
-                location: event.location,
-                event_type: event.event_type,
-                triggerType: 'time',
-                popupType: 'event_reminder',
-              });
+            const payload: NotificationPayload = {
+              id: event.id!,
+              title: event.title,
+              description: event.description,
+              event_time: event.event_time,
+              location: event.location,
+              event_type: event.event_type,
+              triggerType: 'time',
+              popupType: 'event_reminder',
+            };
+
+            const triggerId = trigger.id!;
+            const success = await safeNotify(payload);
+            if (success) {
+              await markTriggerFired(triggerId);
+              console.log(`🔔 Time trigger fired: ${event.title}`);
+            } else {
+              scheduleRetry(payload, 'callback_failed', 0, async () => markTriggerFired(triggerId));
             }
-
-            console.log(`🔔 Time trigger fired: ${event.title}`);
+          } else {
+            // Event doesn't qualify (wrong status, not found) — mark fired to avoid re-firing
+            await markTriggerFired(trigger.id!);
           }
-
-          await markTriggerFired(trigger.id!);
         }
       } catch (error) {
         console.error(`Failed to process trigger ${trigger.id}:`, error);
@@ -220,6 +361,8 @@ async function checkTimeTriggers(): Promise<void> {
     console.error('Scheduler: checkTimeTriggers error:', err);
   }
 }
+
+// ============ Event Lifecycle Helpers ============
 
 // Mark event as completed
 export async function completeEvent(eventId: number): Promise<void> {

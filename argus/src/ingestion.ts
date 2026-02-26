@@ -1,4 +1,4 @@
-import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEvent, findDuplicateEvent } from './elastic.js';
+import { insertMessage, insertEvent, insertTrigger, getRecentMessages, upsertContact, checkEventConflicts, findActiveEventsByKeywords, getActiveEvents, ignoreEvent, completeEvent as dbCompleteEvent, snoozeEvent, deleteEvent, updateEvent, findDuplicateEvent, getEventById } from './elastic.js';
 import { extractEvents, shouldSkipMessage, detectAction } from './gemini.js';
 import type { Message, WhatsAppWebhook, TriggerType } from './types.js';
 
@@ -57,7 +57,7 @@ export async function processWebhook(
   options: { processOwnMessages: boolean; skipGroupMessages: boolean }
 ): Promise<IngestionResult> {
   const { data } = payload;
-  
+
   // Extract message content
   const content = data.message?.conversation || data.message?.extendedTextMessage?.text;
   if (!content) {
@@ -76,8 +76,8 @@ export async function processWebhook(
   }
 
   // Create message object
-  const timestamp = typeof data.messageTimestamp === 'string' 
-    ? parseInt(data.messageTimestamp) 
+  const timestamp = typeof data.messageTimestamp === 'string'
+    ? parseInt(data.messageTimestamp)
     : data.messageTimestamp;
 
   const senderName = data.pushName || null;
@@ -125,10 +125,10 @@ export async function processWebhook(
 
   if (actionResult.isAction && actionResult.confidence >= 0.6 && actionResult.action !== 'none') {
     console.log(`🎯 [ACTION] Detected action: "${actionResult.action}" on "${actionResult.targetDescription}" (confidence: ${actionResult.confidence})`);
-    
+
     // Find the target event
     let targetEvent = null;
-    
+
     // Try to find by keywords
     if (actionResult.targetKeywords.length > 0) {
       const matches = await findActiveEventsByKeywords(actionResult.targetKeywords);
@@ -136,7 +136,7 @@ export async function processWebhook(
         targetEvent = matches[0]; // Best match
       }
     }
-    
+
     // Fallback: use most recent active event
     if (!targetEvent && activeEvents.length > 0) {
       targetEvent = activeEvents[0];
@@ -179,7 +179,7 @@ export async function processWebhook(
           // Build the proposed changes — but DON'T apply them yet.
           // Return as pendingAction so the user gets a confirmation popup.
           const proposedChanges: Record<string, any> = {};
-          
+
           if (actionResult.newTime) {
             try {
               let parsedTime = Math.floor(new Date(actionResult.newTime).getTime() / 1000);
@@ -208,7 +208,7 @@ export async function processWebhook(
             if (proposedChanges.title) parts.push(`title → "${proposedChanges.title}"`);
             if (proposedChanges.event_time) {
               const d = new Date(proposedChanges.event_time * 1000);
-              const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+              const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
               parts.push(`time → ${dayNames[d.getDay()]}, ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`);
             }
             if (proposedChanges.location) parts.push(`location → "${proposedChanges.location}"`);
@@ -256,7 +256,7 @@ export async function processWebhook(
 
   // ============ STEP 2: Not an action → extract NEW events (or updates to existing) ============
   const result = await processMessage(message, context, senderName, activeEvents);
-  
+
   return result;
 }
 
@@ -296,73 +296,86 @@ export async function processMessage(
       const targetEventId = (event as any).target_event_id;
 
       if ((eventAction === 'update' || eventAction === 'merge') && targetEventId) {
-        console.log(`🔄 [CRUD] ${eventAction} on event #${targetEventId}: "${event.title}"`);
-        
-        const updateFields: Record<string, any> = {};
-        if (eventAction === 'update') {
-          // Only update fields that Gemini explicitly set
-          if (event.title) updateFields.title = event.title;
-          if (event.description) updateFields.description = event.description;
-          if (event.location) updateFields.location = event.location;
-          if (event.event_time) {
-            try {
-              let parsedTime = Math.floor(new Date(event.event_time).getTime() / 1000);
-              if (!isNaN(parsedTime) && parsedTime > 0) {
-                // Guard: push past dates forward
-                const nowUnix = Math.floor(Date.now() / 1000);
-                if (parsedTime < nowUnix - 3600) {
-                  const weekSec = 7 * 24 * 3600;
-                  while (parsedTime < nowUnix) parsedTime += weekSec;
-                  console.log(`\u23e9 [Date Fix] CRUD update had past date, moved to ${new Date(parsedTime * 1000).toISOString()}`);
+        // Verify the target event still exists AND is still active (not deleted/ignored/completed)
+        const targetExists = await getEventById(targetEventId);
+        const inactiveStatuses = ['deleted', 'ignored', 'completed'];
+        if (!targetExists || inactiveStatuses.includes((targetExists as any).status)) {
+          console.log(`⚠️ [CRUD] Target event #${targetEventId} no longer exists or has status "${(targetExists as any)?.status}" — creating new event instead.`);
+          // Fall through to the normal create path below
+        } else {
+          console.log(`🔄 [CRUD] ${eventAction} on event #${targetEventId}: "${event.title}"`);
+
+          const updateFields: Record<string, any> = {};
+          if (eventAction === 'update') {
+            // Only update fields that Gemini explicitly set
+            if (event.title) updateFields.title = event.title;
+            if (event.description) updateFields.description = event.description;
+            if (event.location) updateFields.location = event.location;
+            if (event.event_time) {
+              try {
+                let parsedTime = Math.floor(new Date(event.event_time).getTime() / 1000);
+                if (!isNaN(parsedTime) && parsedTime > 0) {
+                  // Guard: push past dates forward
+                  const nowUnix = Math.floor(Date.now() / 1000);
+                  if (parsedTime < nowUnix - 3600) {
+                    const weekSec = 7 * 24 * 3600;
+                    while (parsedTime < nowUnix) parsedTime += weekSec;
+                    console.log(`\u23e9 [Date Fix] CRUD update had past date, moved to ${new Date(parsedTime * 1000).toISOString()}`);
+                  }
+                  updateFields.event_time = parsedTime;
                 }
-                updateFields.event_time = parsedTime;
+              } catch { /* skip invalid time */ }
+            }
+            if (event.keywords && event.keywords.length > 0) updateFields.keywords = event.keywords.join(',');
+            if (event.participants && event.participants.length > 0) updateFields.participants = JSON.stringify(event.participants);
+          } else if (eventAction === 'merge') {
+            // Merge: append to description
+            if (event.description) {
+              const existing = existingEvents.find(e => e.id === targetEventId);
+              const existingDesc = existing?.description || '';
+              updateFields.description = existingDesc ? `${existingDesc}. ${event.description}` : event.description;
+            }
+            if (event.participants && event.participants.length > 0) {
+              const existing = existingEvents.find(e => e.id === targetEventId);
+              try {
+                const existingParticipants = JSON.parse(existing?.sender_name || '[]');
+                const merged = [...new Set([...existingParticipants, ...event.participants])];
+                updateFields.participants = JSON.stringify(merged);
+              } catch {
+                updateFields.participants = JSON.stringify(event.participants);
               }
-            } catch { /* skip invalid time */ }
-          }
-          if (event.keywords && event.keywords.length > 0) updateFields.keywords = event.keywords.join(',');
-          if (event.participants && event.participants.length > 0) updateFields.participants = JSON.stringify(event.participants);
-        } else if (eventAction === 'merge') {
-          // Merge: append to description
-          if (event.description) {
-            const existing = existingEvents.find(e => e.id === targetEventId);
-            const existingDesc = existing?.description || '';
-            updateFields.description = existingDesc ? `${existingDesc}. ${event.description}` : event.description;
-          }
-          if (event.participants && event.participants.length > 0) {
-            const existing = existingEvents.find(e => e.id === targetEventId);
-            try {
-              const existingParticipants = JSON.parse(existing?.sender_name || '[]');
-              const merged = [...new Set([...existingParticipants, ...event.participants])];
-              updateFields.participants = JSON.stringify(merged);
-            } catch {
-              updateFields.participants = JSON.stringify(event.participants);
             }
           }
-        }
 
-        if (Object.keys(updateFields).length > 0) {
-          const updated = await updateEvent(targetEventId, updateFields);
-          if (updated) {
-            const changedStr = Object.keys(updateFields).join(', ');
-            console.log(`✅ [CRUD] Event #${targetEventId} updated: [${changedStr}]`);
-            
-            createdEvents.push({
-              id: targetEventId,
-              event_type: event.type,
-              title: event.title,
-              description: event.description,
-              event_time: updateFields.event_time || null,
-              location: event.location,
-              participants: updateFields.participants || JSON.stringify(event.participants),
-              keywords: event.keywords.join(','),
-              confidence: event.confidence,
-              context_url: null,
-              sender_name: senderName,
-            });
-            eventsCreated++; // Count as an "event processed"
+          if (Object.keys(updateFields).length > 0) {
+            const updated = await updateEvent(targetEventId, updateFields);
+            if (updated) {
+              const changedStr = Object.keys(updateFields).join(', ');
+              console.log(`✅ [CRUD] Event #${targetEventId} updated: [${changedStr}]`);
+
+              createdEvents.push({
+                id: targetEventId,
+                event_type: event.type,
+                title: event.title,
+                description: event.description,
+                event_time: updateFields.event_time || null,
+                location: event.location,
+                participants: updateFields.participants || JSON.stringify(event.participants),
+                keywords: event.keywords.join(','),
+                confidence: event.confidence,
+                context_url: null,
+                sender_name: senderName,
+              });
+              eventsCreated++; // Count as an "event processed"
+              continue; // Skip normal insert — we updated instead
+            } else {
+              console.log(`⚠️ [CRUD] updateEvent #${targetEventId} returned falsy — falling through to create new event`);
+              // Fall through to normal insert below
+            }
+          } else {
+            continue; // Nothing to update, skip silently
           }
         }
-        continue; // Skip normal insert — we updated instead
       }
 
       // Deduplication: skip if a similar event already exists in last 48 hours
@@ -396,18 +409,18 @@ export async function processMessage(
 
       // Determine context_url based on event type
       let contextUrl: string | null = null;
-      
+
       // Known streaming/service keywords that should trigger context reminders
       const serviceKeywords = [
-        'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify', 
+        'netflix', 'hotstar', 'amazon', 'prime', 'disney', 'spotify',
         'youtube', 'hulu', 'hbo', 'zee5', 'sonyliv', 'jiocinema',
         'canva', 'figma', 'notion', 'slack', 'zoom',
         'gym', 'domain', 'hosting', 'hostinger', 'aws', 'azure', 'vercel', 'heroku'
       ];
-      
+
       // Build search text from all fields
       const searchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title} ${event.description || ''}`.toLowerCase();
-      
+
       // Check for service keywords in ANY event type
       for (const service of serviceKeywords) {
         if (searchText.includes(service)) {
@@ -416,7 +429,7 @@ export async function processMessage(
           break;
         }
       }
-      
+
       // For travel: extract location keywords (goa, mumbai, delhi, etc.)
       if (event.type === 'travel' || event.type === 'recommendation') {
         const travelKeywords = [
@@ -424,9 +437,9 @@ export async function processMessage(
           'jaipur', 'udaipur', 'kerala', 'manali', 'shimla', 'ladakh', 'kashmir',
           'thailand', 'bali', 'singapore', 'dubai', 'maldives', 'europe'
         ];
-        
+
         const travelSearchText = `${event.location || ''} ${event.keywords.join(' ')} ${event.title} ${event.description || ''}`.toLowerCase();
-        
+
         for (const place of travelKeywords) {
           if (travelSearchText.includes(place)) {
             contextUrl = place;
@@ -434,21 +447,21 @@ export async function processMessage(
           }
         }
       }
-      
+
       // For gifts/shopping: map product categories to shopping site keywords
       // so that visiting nykaa/myntra/amazon triggers the reminder
       if (!contextUrl && event.type === 'recommendation') {
         const shoppingText = `${event.keywords.join(' ')} ${event.title} ${event.description || ''}`.toLowerCase();
-        
+
         // Beauty/makeup → nykaa
         const beautyKeywords = ['makeup', 'beauty', 'cosmetic', 'skincare', 'lipstick', 'foundation', 'perfume', 'fragrance', 'nykaa'];
         const fashionKeywords = ['sneakers', 'shoes', 'clothes', 'dress', 'fashion', 'shirt', 'jeans', 'kurta', 'saree', 'myntra', 'nike', 'adidas', 'puma'];
         const giftKeywords = ['gift', 'birthday', 'anniversary', 'present'];
-        
+
         const isBeauty = beautyKeywords.some(k => shoppingText.includes(k));
         const isFashion = fashionKeywords.some(k => shoppingText.includes(k));
         const isGift = giftKeywords.some(k => shoppingText.includes(k));
-        
+
         if (isBeauty) {
           contextUrl = 'nykaa';
           console.log(`[Ingestion] Gift/beauty intent → context_url="nykaa" for "${event.title}"`);
@@ -497,7 +510,7 @@ export async function processMessage(
       };
       const eventId = await insertEvent(eventData);
       eventsCreated++;
-      
+
       // Track for return
       createdEvents.push({
         id: eventId,
@@ -578,7 +591,7 @@ export async function processMessage(
     }
 
     console.log(`📥 Processed message ${message.id}: ${eventsCreated} events, ${triggersCreated} triggers`);
-    
+
   } catch (error) {
     console.error(`❌ Failed to process message ${message.id}:`, error);
   }

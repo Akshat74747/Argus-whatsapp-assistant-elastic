@@ -51,8 +51,8 @@ export function initEvolutionDb(config: EvolutionConfig): void {
     max: 10,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
-    // Set search_path so Prisma-created tables in the evolution_api schema are found
-    options: `-c search_path=${schema},public`,
+    // Set search_path and cap slow queries at 10s to prevent server stalls
+    options: `-c search_path=${schema},public -c statement_timeout=10000`,
   });
 
   pool.on('error', (err) => {

@@ -1,5 +1,15 @@
 import type { GeminiExtraction, GeminiValidation, Event } from './types.js';
 import { compressEventsForPrompt, compressChatHistory, compressEventsLight } from './quicksave.js';
+import { withFallback, reportSuccess, reportFailure, registerHealthPing } from './ai-tier.js';
+import { cacheGet, cacheSet } from './response-cache.js';
+import {
+  heuristicAnalyze,
+  heuristicDetectAction,
+  heuristicValidateRelevance,
+  heuristicChat,
+  heuristicGeneratePopupBlueprint,
+} from './fallback-heuristics.js';
+import { fetchWithTimeout, withRetry, GeminiApiError, TimeoutError } from './errors.js';
 
 interface GeminiConfig {
   apiKey: string;
@@ -12,6 +22,8 @@ let config: GeminiConfig | null = null;
 export function initGemini(cfg: GeminiConfig): void {
   config = cfg;
   console.log('✅ Gemini initialized:', cfg.model);
+  // Register background health ping for tier recovery checks
+  registerHealthPing(geminiHealthPing);
 }
 
 function getConfig(): GeminiConfig {
@@ -93,7 +105,7 @@ ${nextDayLines.join('\n')}
 // Gemini handles ALL classification and extraction — no brittle keyword heuristics.
 // Now also receives existing events so Gemini can detect updates/modifications.
 
-export async function analyzeMessage(
+async function _geminiAnalyzeMessage(
   message: string,
   context: string[] = [],
   _currentDate: string = new Date().toISOString(),
@@ -274,6 +286,26 @@ ONLY extract events that have CLEAR, SPECIFIC, ACTIONABLE intent:
   }
 }
 
+/** Public wrapper — applies 3-tier fallback logic around Gemini analyzeMessage. */
+export async function analyzeMessage(
+  message: string,
+  context: string[] = [],
+  _currentDate: string = new Date().toISOString(),
+  existingEvents: Array<{ id: number; title: string; event_type: string; keywords: string; event_time: number | null; location: string | null; description: string | null; sender_name?: string | null }> = [],
+  messageTimestamp?: number
+): Promise<GeminiExtraction> {
+  const cacheKey = message.slice(0, 300);
+  return withFallback(
+    async () => {
+      const result = await _geminiAnalyzeMessage(message, context, _currentDate, existingEvents, messageTimestamp);
+      cacheSet('analyzeMessage', cacheKey, result);
+      return result;
+    },
+    () => Promise.resolve(heuristicAnalyze(message, context, existingEvents, messageTimestamp)),
+    () => Promise.resolve(cacheGet<GeminiExtraction>('analyzeMessage', cacheKey) ?? { events: [] })
+  );
+}
+
 // ============ TRUNCATED JSON REPAIR ============
 // Gemini sometimes returns cut-off JSON (token limit / network).
 // Try to close open brackets, braces, and strings so JSON.parse succeeds.
@@ -322,32 +354,86 @@ function repairJSON(raw: string): any | null {
 
 async function callGemini(prompt: string, jsonMode = true): Promise<string> {
   const cfg = getConfig();
-  
-  const response = await fetch(`${cfg.apiUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.1,
-      max_tokens: 4096,
-      ...(jsonMode && { response_format: { type: 'json_object' } }),
-    }),
-  });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Gemini API error: ${response.status} - ${error}`);
+  try {
+    return await withRetry(async (timeoutMs) => {
+      const response = await fetchWithTimeout(
+        `${cfg.apiUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${cfg.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: cfg.model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.1,
+            max_tokens: 4096,
+            ...(jsonMode && { response_format: { type: 'json_object' } }),
+          }),
+        },
+        timeoutMs
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        if (response.status === 429) {
+          const retryAfterSec = parseInt(response.headers.get('Retry-After') || '0');
+          // Only retry if Retry-After is absent or short (≤10s); skip retry if server says wait longer
+          const retryable = retryAfterSec === 0 || retryAfterSec <= 10;
+          throw new GeminiApiError(`Gemini 429: ${errorText.slice(0, 100)}`, 429, retryable);
+        }
+        throw new GeminiApiError(
+          `Gemini API error ${response.status}: ${errorText.slice(0, 200)}`,
+          response.status
+        );
+      }
+
+      const data = await response.json() as { choices: Array<{ message?: { content?: string } }> };
+      const content = data.choices[0]?.message?.content || '';
+      reportSuccess();
+      return content;
+    }, {
+      maxRetries: 1,
+      firstTimeoutMs: 30000,
+      retryTimeoutMs: 15000,
+      shouldRetry: (err) =>
+        err instanceof GeminiApiError ? err.retryable : err instanceof TimeoutError,
+    });
+  } catch (err) {
+    reportFailure(err);
+    throw err;
   }
+}
 
-  const data = await response.json() as { choices: Array<{ message?: { content?: string } }> };
-  return data.choices[0]?.message?.content || '';
+/** Lightweight health ping for background tier recovery checks. */
+async function geminiHealthPing(): Promise<boolean> {
+  try {
+    const cfg = getConfig();
+    const response = await fetchWithTimeout(
+      `${cfg.apiUrl}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cfg.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: cfg.model,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+        }),
+      },
+      10000  // 10s timeout for health pings
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 // ============ ACTION DETECTION ============
@@ -366,7 +452,7 @@ export interface ActionResult {
   confidence: number;
 }
 
-export async function detectAction(
+async function _geminiDetectAction(
   message: string,
   context: string[] = [],
   existingEvents: Array<{ id: number; title: string; event_type: string; keywords: string }> = [],
@@ -460,6 +546,26 @@ If it's a new event/task/recommendation (NOT an action), return: {"isAction": fa
   }
 }
 
+/** Public wrapper — applies 3-tier fallback logic around Gemini detectAction. */
+export async function detectAction(
+  message: string,
+  context: string[] = [],
+  existingEvents: Array<{ id: number; title: string; event_type: string; keywords: string }> = [],
+  messageTimestamp?: number
+): Promise<ActionResult> {
+  const safeDefault: ActionResult = { isAction: false, action: 'none', targetKeywords: [], targetDescription: '', confidence: 0 };
+  const cacheKey = message.slice(0, 300);
+  return withFallback(
+    async () => {
+      const result = await _geminiDetectAction(message, context, existingEvents, messageTimestamp);
+      cacheSet('detectAction', cacheKey, result);
+      return result;
+    },
+    () => Promise.resolve(heuristicDetectAction(message, context, existingEvents)),
+    () => Promise.resolve(cacheGet<ActionResult>('detectAction', cacheKey) ?? safeDefault)
+  );
+}
+
 // generateNotificationMessage() removed in v2.6.0 — replaced by generatePopupBlueprint()
 // which returns the COMPLETE popup spec (icon, buttons, styles) not just text
 
@@ -467,7 +573,7 @@ If it's a new event/task/recommendation (NOT an action), return: {"isAction": fa
 // Kept as alias for backward compatibility with batch import.
 export const extractEvents = analyzeMessage;
 
-export async function validateRelevance(
+async function _geminiValidateRelevance(
   url: string,
   title: string,
   candidates: Event[]
@@ -517,6 +623,25 @@ Rules:
   }
 }
 
+/** Public wrapper — applies 3-tier fallback logic around Gemini validateRelevance. */
+export async function validateRelevance(
+  url: string,
+  title: string,
+  candidates: Event[]
+): Promise<GeminiValidation> {
+  if (candidates.length === 0) return { relevant: [], confidence: 0 };
+  const cacheKey = `${url}|${candidates.map(c => c.id).join(',')}`;
+  return withFallback(
+    async () => {
+      const result = await _geminiValidateRelevance(url, title, candidates);
+      cacheSet('validateRelevance', cacheKey, result);
+      return result;
+    },
+    () => Promise.resolve(heuristicValidateRelevance(url, title, candidates)),
+    () => Promise.resolve(cacheGet<GeminiValidation>('validateRelevance', cacheKey) ?? { relevant: [], confidence: 0 })
+  );
+}
+
 // ============ AI CHAT WITH EVENTS CONTEXT ============
 // Conversational AI that can see and query the user's events
 
@@ -525,7 +650,7 @@ export interface ChatResponse {
   relevantEventIds: number[];
 }
 
-export async function chatWithContext(
+async function _geminiChatWithContext(
   query: string,
   events: Array<{ id: number; title: string; description: string | null; event_type: string; event_time: number | null; location: string | null; status: string; keywords: string; sender_name?: string | null; context_url?: string | null }>,
   history: Array<{ role: string; content: string }> = []
@@ -596,6 +721,28 @@ Return JSON:
   }
 }
 
+/** Public wrapper — applies 3-tier fallback logic around Gemini chatWithContext. */
+export async function chatWithContext(
+  query: string,
+  events: Array<{ id: number; title: string; description: string | null; event_type: string; event_time: number | null; location: string | null; status: string; keywords: string; sender_name?: string | null; context_url?: string | null }>,
+  history: Array<{ role: string; content: string }> = []
+): Promise<ChatResponse> {
+  const cacheKey = `${query.slice(0, 200)}|${events.map(e => e.id).join(',')}`;
+  const safeDefault: ChatResponse = {
+    response: "I'm having trouble connecting. Ask again in a bit! 🔄",
+    relevantEventIds: [],
+  };
+  return withFallback(
+    async () => {
+      const result = await _geminiChatWithContext(query, events, history);
+      cacheSet('chatWithContext', cacheKey, result);
+      return result;
+    },
+    () => Promise.resolve(heuristicChat(query, events, history)),
+    () => Promise.resolve(cacheGet<ChatResponse>('chatWithContext', cacheKey) ?? safeDefault)
+  );
+}
+
 // ============ TRIVIAL PRE-FILTER ============
 // Minimal check to avoid wasting a Gemini call on pure noise.
 // Everything else goes to Gemini — no more brittle keyword heuristics.
@@ -632,7 +779,7 @@ export interface PopupBlueprint {
   popupType: string;
 }
 
-export async function generatePopupBlueprint(
+async function _geminiGeneratePopupBlueprint(
   event: { title: string; description?: string | null; event_type?: string; location?: string | null; sender_name?: string | null; keywords?: string; event_time?: number | null },
   triggerContext: { url?: string; pageTitle?: string; conflictingEvents?: Array<{ title: string; event_time?: number | null }> },
   popupType: string
@@ -732,8 +879,27 @@ Be SPECIFIC — use actual names, places, services from the event. Never be gene
   }
 }
 
-// Fallback when Gemini fails — ensures popups always work
-function getDefaultPopupBlueprint(
+/** Public wrapper — applies 3-tier fallback logic around Gemini generatePopupBlueprint. */
+export async function generatePopupBlueprint(
+  event: { title: string; description?: string | null; event_type?: string; location?: string | null; sender_name?: string | null; keywords?: string; event_time?: number | null },
+  triggerContext: { url?: string; pageTitle?: string; conflictingEvents?: Array<{ title: string; event_time?: number | null }> },
+  popupType: string
+): Promise<PopupBlueprint> {
+  const cacheKey = `${event.title.slice(0, 100)}|${popupType}`;
+  return withFallback(
+    async () => {
+      const result = await _geminiGeneratePopupBlueprint(event, triggerContext, popupType);
+      cacheSet('generatePopupBlueprint', cacheKey, result);
+      return result;
+    },
+    () => Promise.resolve(heuristicGeneratePopupBlueprint(event, triggerContext, popupType)),
+    () => Promise.resolve(cacheGet<PopupBlueprint>('generatePopupBlueprint', cacheKey) ?? getDefaultPopupBlueprint(event, popupType))
+  );
+}
+
+// Fallback when Gemini fails — ensures popups always work.
+// Exported for reuse by fallback tiers (Tier 2/3).
+export function getDefaultPopupBlueprint(
   event: { title: string; description?: string | null; event_type?: string; sender_name?: string | null },
   popupType: string
 ): PopupBlueprint {
