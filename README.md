@@ -22,8 +22,9 @@ docker compose logs -f argus   # View Argus logs
 cd evolution-api
 npm install
 cp .env.example .env           # Fill in api key given below in configurations (only one time when starting for the first time)
-npm run dev:server                   # Hot-reload dev server on :3000
+npm run dev:server                   # Hot-reload dev server on :8080
 ```
+After evolution-api starts visit localhost:8080/manager and make your instance, then start argus
 
 ```bash
 cd argus
