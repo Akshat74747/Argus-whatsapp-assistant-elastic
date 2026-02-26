@@ -2,6 +2,52 @@
 
 All notable changes to Argus will be documented in this file.
 
+## [3.1.0] - 2026-02-26
+
+### Added — Elastic Agent Builder MCP Agentic Chat
+
+When `ELASTIC_MCP_URL` is configured, `/api/chat` now uses a multi-step agentic loop: Gemini calls Elastic Agent Builder MCP tools to query Elasticsearch directly — deciding what to search and how — instead of receiving a pre-built list of up to 100 events. Zero behavioral change when `ELASTIC_MCP_URL` is absent.
+
+#### New Files
+- **`src/mcp-client.ts`** — JSON-RPC 2.0 client for the Elastic Agent Builder MCP endpoint
+  - `initMcpClient(url, apiKey)` — startup connectivity test (non-fatal on failure)
+  - `fetchMcpTools()` — `tools/list` with 5-minute in-memory cache; converts `inputSchema` → OpenAI function format
+  - `callMcpTool(name, args)` — `tools/call`; concatenates all `result.content[].text` parts
+  - `isMcpConfigured()` — guard used by `chatWithContext()` and `POST /api/chat` to select MCP vs legacy path
+  - `getMcpStatus()` — structured status object for `/api/mcp-status`
+  - Auth: `Authorization: ApiKey ${ELASTIC_API_KEY}` on every request
+  - All HTTP calls use `fetchWithTimeout(..., 10_000)` (10 s per MCP call)
+
+#### Modified — `src/gemini.ts`
+- Added `GeminiMessage` interface (`role`, `content`, `tool_calls`, `tool_call_id`, `name`)
+- Added `callGeminiWithTools(messages, tools)` — calls `${apiUrl}/chat/completions` with `tool_choice: 'auto'`; omits `response_format` (incompatible with tool-call mode); omits `SYSTEM_PROMPT` injection (caller owns the message array)
+- Added `CHAT_MCP_SYSTEM_PROMPT` — instructs Gemini to use MCP tools then return final answer as `{ "response":"...", "relevantEventIds":[...] }` JSON
+- Added `_geminiChatWithContextMcp(query, history)` — agentic loop (up to `MAX_TOOL_ITERATIONS = 5`):
+  - Fetches tools via `fetchMcpTools()`, builds message array, loops `callGeminiWithTools`
+  - On `tool_calls`: executes each via `callMcpTool`; injects error JSON on failure so Gemini can adapt; accumulates `relevantEventIds` from `"id": <number>` regex patterns in tool results
+  - On `stop`: parses `assistantMsg.content` as JSON → falls back to `repairJSON()` → raw text
+  - `reportSuccess()` / `reportFailure()` wired to tier manager as normal
+- Updated `chatWithContext()` Tier 1 dispatcher: routes to `_geminiChatWithContextMcp()` when `isMcpConfigured()`, `_geminiChatWithContext()` otherwise; Tier 2 / Tier 3 paths unchanged
+
+#### Modified — `src/server.ts`
+- Added MCP init in `bootstrap()` (after `initElastic`): `initMcpClient(config.elasticMcpUrl, config.elasticApiKey)` wrapped in `.catch()` — startup failure is non-fatal
+- Added `GET /api/mcp-status` — returns `getMcpStatus()`: `{ configured, url, toolCount, toolCacheAgeMs, toolCacheFresh, lastError, lastSuccessAt }`
+- Added `mcpConfigured: isMcpConfigured()` field to `GET /api/health` response
+- Optimized `POST /api/chat` for MCP path: skips `getAllEvents(100)` bulk fetch when MCP is active (Gemini queries ES itself); resolves referenced events individually via `getEventById()` after chat returns
+
+#### Modified — `.env.example`
+- `ELASTIC_MCP_URL` is now a commented-out block explaining the feature, required Kibana privilege (`feature_agentBuilder.read`), and URL format
+
+#### Error Handling
+
+| Failure | Behaviour |
+|---------|-----------|
+| `initMcpClient` fails at startup | Warn and continue; MCP stays configured; retries on next request |
+| `fetchMcpTools()` fails | `reportFailure()` + rethrow → `withFallback()` → Tier 2 |
+| `callMcpTool()` fails | Error JSON injected as tool result; Gemini adapts; loop continues |
+| Max 5 iterations exceeded | Throws → `withFallback()` → Tier 2 |
+| `ELASTIC_MCP_URL` not set | `isMcpConfigured() = false`; legacy path used; zero impact |
+
 ## [3.0.0-elastic] - 2026-02-15
 
 ### Major — SQLite to Elasticsearch Serverless Migration

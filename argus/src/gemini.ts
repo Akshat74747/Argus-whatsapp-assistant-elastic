@@ -10,6 +10,7 @@ import {
   heuristicGeneratePopupBlueprint,
 } from './fallback-heuristics.js';
 import { fetchWithTimeout, withRetry, GeminiApiError, TimeoutError } from './errors.js';
+import { isMcpConfigured, fetchMcpTools, callMcpTool, type OpenAiFunction } from './mcp-client.js';
 
 interface GeminiConfig {
   apiKey: string;
@@ -642,6 +643,218 @@ export async function validateRelevance(
   );
 }
 
+// ============ TOOL-CALL SUPPORT (MCP agentic loop) ============
+
+interface GeminiMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
+  tool_call_id?: string;
+  name?: string;
+}
+
+/**
+ * Single Gemini call that supports tool definitions.
+ * Does NOT inject SYSTEM_PROMPT — caller owns the full message array.
+ * Does NOT set response_format (incompatible with tool-call mode).
+ * Returns the raw assistant message (may contain tool_calls or plain content).
+ */
+async function callGeminiWithTools(
+  messages: GeminiMessage[],
+  tools: OpenAiFunction[],
+  timeoutMs: number = 20_000
+): Promise<GeminiMessage> {
+  const cfg = getConfig();
+
+  const response = await fetchWithTimeout(
+    `${cfg.apiUrl}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        model:       cfg.model,
+        messages,
+        temperature: 0.1,
+        max_tokens:  4096,
+        tools,
+        tool_choice: 'auto',
+      }),
+    },
+    timeoutMs
+  );
+
+  if (!response.ok) {
+    const errText = await response.text();
+    if (response.status === 429) {
+      const retryAfterSec = parseInt(response.headers.get('Retry-After') || '0');
+      throw new GeminiApiError(`Gemini 429: ${errText.slice(0, 100)}`, 429, retryAfterSec === 0 || retryAfterSec <= 10);
+    }
+    throw new GeminiApiError(`Gemini API error ${response.status}: ${errText.slice(0, 200)}`, response.status);
+  }
+
+  const data = await response.json() as {
+    choices: Array<{
+      message?: {
+        role: string;
+        content: string | null;
+        tool_calls?: Array<{
+          id: string;
+          type: 'function';
+          function: { name: string; arguments: string };
+        }>;
+      };
+      finish_reason: string;
+    }>;
+  };
+
+  const msg = data.choices[0]?.message;
+  if (!msg) {
+    throw new GeminiApiError('Gemini returned no message choice', 500);
+  }
+
+  return {
+    role:       msg.role as 'assistant',
+    content:    msg.content ?? '',
+    tool_calls: msg.tool_calls,
+  };
+}
+
+const CHAT_MCP_SYSTEM_PROMPT = `You are Argus AI, a helpful conversational memory assistant for the user's WhatsApp data.
+You have access to tools that query the user's Elasticsearch events database directly.
+Use them to find relevant events and answer the user's question accurately.
+
+INSTRUCTIONS:
+- Think about what to search for, then call the appropriate tool
+- You may call tools up to 5 times — prefer 1-2 focused calls over many broad ones
+- After gathering information, give a helpful, conversational response (2-5 sentences)
+- Include the IDs of events you reference in "relevantEventIds"
+- If no relevant events are found, say so honestly
+- When displaying dates, include the day of week (e.g., "Thursday, Feb 12 at 8 PM")
+- Only show FUTURE events when user asks "what do I have today/this week"
+
+Return ONLY this JSON when you are done:
+{
+  "response": "your conversational answer",
+  "relevantEventIds": [1, 5, 12]
+}`;
+
+const MAX_TOOL_ITERATIONS = 5;
+
+/**
+ * MCP-enhanced chat: Gemini calls Elastic Agent Builder tools in a loop
+ * to query Elasticsearch directly instead of receiving a pre-fetched event list.
+ */
+async function _geminiChatWithContextMcp(
+  query: string,
+  history: Array<{ role: string; content: string }>
+): Promise<ChatResponse> {
+  let tools: OpenAiFunction[];
+  try {
+    tools = await fetchMcpTools();
+  } catch (err) {
+    reportFailure(err);
+    throw err;
+  }
+
+  if (tools.length === 0) {
+    throw new Error('[MCP] No tools available from MCP server');
+  }
+
+  // Build initial message array
+  const messages: GeminiMessage[] = [
+    { role: 'system', content: CHAT_MCP_SYSTEM_PROMPT + '\n' + formatDateContext() },
+  ];
+
+  // Inject last 10 turns of conversation history
+  for (const h of history.slice(-10)) {
+    messages.push({
+      role:    h.role === 'assistant' ? 'assistant' : 'user',
+      content: h.content,
+    } as GeminiMessage);
+  }
+
+  messages.push({ role: 'user', content: query });
+
+  // Accumulate event IDs seen in tool results for relevantEventIds fallback
+  const toolResultIds: number[] = [];
+
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    let assistantMsg: GeminiMessage;
+
+    try {
+      assistantMsg = await callGeminiWithTools(messages, tools);
+      reportSuccess();
+    } catch (err) {
+      reportFailure(err);
+      throw err;
+    }
+
+    messages.push(assistantMsg);
+
+    // ---- Tool calls requested ----
+    if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+      for (const toolCall of assistantMsg.tool_calls) {
+        const toolName = toolCall.function.name;
+        let toolResultText: string;
+
+        try {
+          const args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
+          console.log(`[MCP] Tool call: ${toolName}(${JSON.stringify(args).slice(0, 120)})`);
+          toolResultText = await callMcpTool(toolName, args);
+
+          // Extract numeric event IDs from tool result for relevantEventIds fallback
+          const idMatches = toolResultText.match(/"id"\s*:\s*(\d+)/g) ?? [];
+          for (const m of idMatches) {
+            const id = parseInt(m.replace(/\D/g, ''));
+            if (!isNaN(id) && !toolResultIds.includes(id)) toolResultIds.push(id);
+          }
+        } catch (toolErr) {
+          // Inject error as tool result so Gemini can adapt
+          const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+          toolResultText = JSON.stringify({ error: errMsg });
+          console.warn(`[MCP] Tool "${toolName}" failed: ${errMsg}`);
+        }
+
+        messages.push({
+          role:         'tool',
+          content:      toolResultText,
+          tool_call_id: toolCall.id,
+          name:         toolName,
+        });
+      }
+      continue; // let Gemini see results and decide next step
+    }
+
+    // ---- Final response ----
+    try {
+      const parsed = JSON.parse(assistantMsg.content);
+      return {
+        response:         parsed.response || 'I could not process that. Try asking differently.',
+        relevantEventIds: parsed.relevantEventIds ?? toolResultIds,
+      };
+    } catch {
+      const repaired = repairJSON(assistantMsg.content);
+      if (repaired?.response) {
+        return { response: repaired.response, relevantEventIds: repaired.relevantEventIds ?? toolResultIds };
+      }
+      // Plain text fallback — still a valid ChatResponse
+      return {
+        response:         assistantMsg.content || 'Sorry, I could not formulate a response.',
+        relevantEventIds: toolResultIds,
+      };
+    }
+  }
+
+  throw new Error('[MCP] Gemini exceeded max tool-call iterations without a final response');
+}
+
 // ============ AI CHAT WITH EVENTS CONTEXT ============
 // Conversational AI that can see and query the user's events
 
@@ -734,7 +947,9 @@ export async function chatWithContext(
   };
   return withFallback(
     async () => {
-      const result = await _geminiChatWithContext(query, events, history);
+      const result = isMcpConfigured()
+        ? await _geminiChatWithContextMcp(query, history)       // agentic: Gemini queries ES via MCP tools
+        : await _geminiChatWithContext(query, events, history);  // legacy: all events embedded in prompt
       cacheSet('chatWithContext', cacheKey, result);
       return result;
     },

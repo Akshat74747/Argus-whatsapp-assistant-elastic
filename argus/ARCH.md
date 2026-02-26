@@ -1,6 +1,6 @@
 # Argus — System Architecture
 
-> **Argus** is a proactive memory assistant that monitors WhatsApp conversations, extracts events and actions using Gemini AI, stores them in Elasticsearch Serverless, and surfaces contextual reminders through a Chrome extension. It includes a 3-tier AI fallback system, hybrid kNN+BM25 search, and automated daily backups.
+> **Argus** is a proactive memory assistant that monitors WhatsApp conversations, extracts events and actions using Gemini AI, stores them in Elasticsearch Serverless, and surfaces contextual reminders through a Chrome extension. It includes a 3-tier AI fallback system, hybrid kNN+BM25 search, automated daily backups, and an optional Elastic Agent Builder MCP integration for agentic AI chat.
 
 ## Architecture Diagram
 
@@ -11,6 +11,7 @@ flowchart TB
     CHROME["Chrome Browser Tabs"]
     GEMINI_API["Gemini API\n(gemini-3-flash-preview)"]
     ELASTIC_CLOUD[("Elasticsearch Serverless\n(Cloud)")]
+    MCP_SVC["Elastic Agent Builder\nMCP Endpoint\n(optional)"]
 
     %% ============ EVOLUTION API LAYER ============
     subgraph EVOL_LAYER ["Evolution API Layer"]
@@ -56,6 +57,7 @@ flowchart TB
             GEMINI_CALL["gemini.ts\nwithFallback() wrapper"]
             CHAT_CTX["chatWithContext\nAI Chat"]
             EMBED_GEN["embeddings.ts\ngenerateEmbedding()"]
+            MCP_CLIENT["mcp-client.ts\nJSON-RPC 2.0 MCP client"]
         end
 
         subgraph SCHEDULER_SYS ["Scheduler System"]
@@ -92,6 +94,7 @@ flowchart TB
             direction TB
             EP_HEALTH["/api/health"]
             EP_AI_STATUS["/api/ai-status"]
+            EP_MCP_STATUS["/api/mcp-status"]
             EP_STATS["/api/stats"]
             EP_EVENTS["/api/events/*"]
             EP_CHAT["/api/chat"]
@@ -164,6 +167,10 @@ flowchart TB
     WS_CLIENT -->|"popup data"| CS
 
     EP_CHAT --> CHAT_CTX
+    EP_MCP_STATUS --> MCP_CLIENT
+    CHAT_CTX -.->|"MCP path\n(if configured)"| MCP_CLIENT
+    MCP_CLIENT <-->|"tools/list + tools/call\nJSON-RPC 2.0"| MCP_SVC
+    MCP_SVC <-->|"Elasticsearch queries"| ELASTIC_CLOUD
     CHAT_CTX --> HYBRID
     EP_CONTEXT --> HYBRID
     EP_EVENTS --> ES_OPS
@@ -201,6 +208,7 @@ flowchart TB
 | `server.ts` | Express + WebSocket server, all REST endpoints, startup bootstrap |
 | `ingestion.ts` | Message processing pipeline: classify → detect action → extract events |
 | `gemini.ts` | All Gemini AI calls wrapped with `withFallback()`: extractEvents, detectAction, chatWithContext, generatePopupBlueprint, validateRelevance |
+| `mcp-client.ts` | Elastic Agent Builder MCP client: `initMcpClient`, `fetchMcpTools` (5-min cache), `callMcpTool` (JSON-RPC 2.0), `isMcpConfigured`, `getMcpStatus` |
 | `elastic.ts` | All Elasticsearch operations: CRUD, hybrid search, embedding backfill helpers, stats |
 | `ai-tier.ts` | AI fallback tier manager: tracks failures, cooldowns, background health pings |
 | `fallback-heuristics.ts` | Tier 2 pure-regex replacements for all 5 Gemini functions |
@@ -359,8 +367,9 @@ Non-retryable: 4xx client errors (except 429).
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/health` | GET | Health check (`aiTier`, `aiTierMode` included) |
+| `/api/health` | GET | Health check (`aiTier`, `aiTierMode`, `mcpConfigured` included) |
 | `/api/ai-status` | GET | Current tier, consecutive failures, cache stats, cooldown info |
+| `/api/mcp-status` | GET | MCP configured state, tool count, cache age, last error |
 | `/api/stats` | GET | Event and message statistics |
 | `/api/events` | GET | List events (filter by `?status=`) |
 | `/api/events/:id` | GET / PATCH / DELETE | Read, update, or delete event |
@@ -384,14 +393,50 @@ Non-retryable: 4xx client errors (except 429).
 | `/api/whatsapp/chats` | GET | Chat list |
 | `/api/whatsapp/instances` | GET | Evolution API instance status |
 | `/api/whatsapp/stats` | GET | WhatsApp statistics |
-| `/api/chat` | POST | AI Chat — hybrid search + Gemini response |
+| `/api/chat` | POST | AI Chat — agentic MCP loop (when configured) or hybrid search + embedded events |
 | `/api/context-check` | POST | Check URL against events (kNN + BM25) |
 | `/api/form-check` | POST | Check DOM form field against memory |
 | `/api/extract-context` | POST | Extract context from URL |
 | `/api/webhook/whatsapp` | POST | Evolution API webhook receiver |
 | `/ws` | WebSocket | Real-time push to Chrome extension |
 
-### 14. Tech Stack
+### 14. Elastic Agent Builder MCP
+
+When `ELASTIC_MCP_URL` is configured, `/api/chat` enters an agentic tool-call loop instead of embedding events directly in the Gemini prompt.
+
+**Agentic Chat Data Flow:**
+```
+POST /api/chat
+  → initMcpClient() at startup (non-fatal if unreachable)
+  → fetchMcpTools()        — tools/list (5-min cache) → OpenAI function format
+  → messages = [system(CHAT_MCP_SYSTEM_PROMPT), ...history(last 10), user(query)]
+
+  loop (max 5 iterations):
+    → callGeminiWithTools(messages, tools)   — tool_choice: 'auto', no JSON mode
+    ← assistantMsg (tool_calls | stop)
+
+    if tool_calls:
+      → callMcpTool(name, args)  — tools/call via JSON-RPC 2.0
+      ← tool result injected as { role: 'tool' } message
+      (error → error JSON injected; loop continues)
+
+    else (stop):
+      ← parse assistantMsg.content → { response, relevantEventIds }
+      → getEventById(id) for each relevantEventId
+      ← return ChatResponse
+```
+
+| Failure | Behaviour |
+|---------|-----------|
+| `initMcpClient` fails | Warn; MCP remains configured; retries on next request |
+| `fetchMcpTools` fails | `reportFailure()` + rethrow → `withFallback()` → Tier 2 |
+| `callMcpTool` fails | Error JSON as tool result; Gemini adapts; loop continues |
+| Max iterations exceeded | Throws → `withFallback()` → Tier 2 |
+| `ELASTIC_MCP_URL` unset | `isMcpConfigured() = false`; legacy path; zero impact |
+
+**Required Kibana privilege:** `feature_agentBuilder.read` on `ELASTIC_API_KEY`.
+
+### 15. Tech Stack
 
 | Layer | Technology |
 |-------|------------|
