@@ -8,6 +8,7 @@ import { dirname, join } from 'path';
 
 import { initElastic, getStats, getEventById, closeElastic, getAllMessages, getAllEvents, deleteEvent, scheduleEventReminder, dismissContextEvent, setEventContextUrl, getEventsByStatus, snoozeEvent, ignoreEvent, completeEvent as dbCompleteEvent, getEventsForDay, updateEvent, searchEventsByKeywords, getEventsWithoutEmbeddings, updateEventEmbedding } from './elastic.js';
 import { initGemini, chatWithContext, generatePopupBlueprint } from './gemini.js';
+import { initMcpClient, isMcpConfigured, getMcpStatus } from './mcp-client.js';
 import { initTierManager, getAiStatus } from './ai-tier.js';
 import { initEmbeddings, generateEmbedding, buildEventEmbeddingText } from './embeddings.js';
 import { configureCache, getCacheStats } from './response-cache.js';
@@ -251,12 +252,18 @@ app.get('/api/health', async (_req: Request, res: Response) => {
     elastic: 'connected',
     aiTier: aiStatus.currentTier,
     aiTierMode: aiStatus.tierMode,
+    mcpConfigured: isMcpConfigured(),
     scheduler: {
       retryQueueSize: getRetryQueueSize(),
       failedReminderCount: getFailedReminderCount(),
     },
     matchCache: getMatchCacheStats(),
   });
+});
+
+// MCP Status
+app.get('/api/mcp-status', (_req: Request, res: Response) => {
+  res.json(getMcpStatus());
 });
 
 // AI Status — detailed tier health info
@@ -682,7 +689,12 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       return;
     }
 
-    const allEvents = await getAllEvents({ limit: 100, offset: 0, status: 'all' });
+    // MCP path: Gemini queries ES itself — skip the bulk fetch
+    // Legacy path: pre-load up to 100 events into the prompt
+    const allEvents = isMcpConfigured()
+      ? []
+      : await getAllEvents({ limit: 100, offset: 0, status: 'all' });
+
     const eventsForContext = allEvents.map((e: any) => ({
       id: e.id,
       title: e.title,
@@ -696,7 +708,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       context_url: e.context_url,
     }));
 
-    console.log(`💬 [CHAT] Query: "${query}" (${eventsForContext.length} events in context)`);
+    console.log(`💬 [CHAT] Query: "${query}" (${isMcpConfigured() ? 'MCP agentic' : `${eventsForContext.length} events in context`})`);
 
     const CHAT_TIMEOUT_MS = 30000;
     const chatTimeoutPromise = new Promise<never>((_, reject) =>
@@ -707,9 +719,11 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       chatTimeoutPromise,
     ]);
 
-    const referencedEvents = chatResult.relevantEventIds
-      .map((id: number) => allEvents.find((e: any) => e.id === id))
-      .filter(Boolean);
+    // MCP path: fetch referenced events individually by ID
+    // Legacy path: look them up from the pre-loaded array
+    const referencedEvents = isMcpConfigured()
+      ? (await Promise.all(chatResult.relevantEventIds.map((id: number) => getEventById(id)))).filter(Boolean)
+      : chatResult.relevantEventIds.map((id: number) => allEvents.find((e: any) => e.id === id)).filter(Boolean);
 
     console.log(`💬 [CHAT] Response: "${chatResult.response.substring(0, 80)}..." (${referencedEvents.length} events referenced)`);
 
@@ -1104,6 +1118,13 @@ async function bootstrap(): Promise<void> {
   } catch (err) {
     console.error('❌ Failed to connect to Elasticsearch:', err);
     process.exit(1);
+  }
+
+  // Init MCP client if configured (non-fatal on failure — MCP is optional)
+  if (config.elasticMcpUrl) {
+    initMcpClient(config.elasticMcpUrl, config.elasticApiKey).catch(err =>
+      console.warn('[MCP] Init failed — agentic chat unavailable:', (err as Error).message)
+    );
   }
 
   // Start scheduler AFTER Elastic is ready
