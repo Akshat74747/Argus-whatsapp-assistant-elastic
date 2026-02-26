@@ -1,483 +1,499 @@
-# Argus — WhatsApp Proactive Memory Assistant
+# Argus — Proactive Memory Assistant v2.7.0
 
-> AI-powered proactive memory assistant that learns from your WhatsApp conversations and reminds you about relevant events while browsing — built with Gemini 3 Flash Preview.
+AI-powered WhatsApp assistant that learns from your conversations, detects events, and reminds you at the right moment — while you browse.
 
-[![Version](https://img.shields.io/badge/version-2.7.1-blue.svg)](argus/CHANGELOG.md)
-[![Node](https://img.shields.io/badge/node-22%2B-brightgreen.svg)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
-[![Gemini](https://img.shields.io/badge/Gemini_3-Flash_Preview-4285F4.svg)](https://ai.google.dev/)
-[![Docker](https://img.shields.io/badge/Docker-4_containers-2496ED.svg)](https://docker.com)
-[![License](https://img.shields.io/badge/license-Private-red.svg)](LICENSE)
+## Quick Start
 
----
-
-## 🎯 What is Argus?
-
-Argus monitors your WhatsApp conversations via [Evolution API](https://github.com/EvolutionAPI/evolution-api) webhooks, extracts events and intent using Google Gemini AI, and delivers real-time popup overlays in your Chrome browser — at the right time and on the right page.
-
-### How It Works
-
-```
-WhatsApp Message
-      │
-      ▼
-Evolution API (webhook: messages.upsert)
-      │
-      ▼
-Argus Server (Express + WebSocket)
-  ├── Gemini AI extracts events / detects actions
-  ├── SQLite + FTS5 stores & indexes events
-  ├── QuickSave compresses context (~40-55% fewer tokens)
-  └── Scheduler manages time-based reminders
-      │
-      ▼
-Chrome Extension (Manifest V3)
-  ├── WebSocket receives real-time events
-  ├── Content script renders popup overlays
-  ├── URL watcher triggers context reminders
-  └── DOM watcher detects form mismatches
-```
-
-### 5 Demo Scenarios
-
-| # | Scenario | What Happens |
-|---|----------|-------------|
-| 1 | **Goa Cashew** | Friend texts "try cashews at Zantye's in Goa" → later you browse a Goa travel site → Argus popup: "Rahul recommended cashews at Zantye's" |
-| 2 | **Insurance Accuracy** | You type "Honda Civic 2022" on ACKO → but your WhatsApp says you own a 2018 model → popup: "You might be overpaying!" + ✏️ Fix It button |
-| 3 | **Gift Intent** | Chat says "need makeup for sis birthday" → you visit Nykaa → popup: "Your sister's birthday gift — makeup is on sale!" |
-| 4 | **Netflix Subscription** | You said "cancel Netflix after this show" → you visit netflix.com → popup: "You planned to cancel this subscription" |
-| 5 | **Calendar Conflict** | You told dinner group "see you Thursday" → then schedule a meeting Thursday → popup: "This conflicts with your dinner plan" |
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Docker & Docker Compose** — runs all 4 services
-- **Chrome browser** — for the extension
-- **Gemini API key** — [get one free](https://aistudio.google.com/apikey)
-
-### 1. Clone & Configure
+### Docker (Recommended — works on Linux / Windows / macOS)
 
 ```bash
 git clone https://github.com/nityam2007/argus-whatsapp-assistant.git
 cd argus-whatsapp-assistant/argus
-
-cp .env.example .env
-# Edit .env → set GEMINI_API_KEY (required, everything else has defaults)
+cp .env.example .env          # Fill in GEMINI_API_KEY + Elasticsearch credentials
+docker compose up -d           # Starts 4 containers (builds everything from source)
+docker compose logs -f argus   # View Argus logs
 ```
 
-### 2. Start Services (Docker)
+> **Everything is included** — Evolution API source, QuickSave, and Argus are all in this repo. No extra downloads needed.
+
+### Local Development
 
 ```bash
-docker compose up -d --build
-
-# Check all 4 containers are running
-docker compose ps
-
-# View logs
-docker compose logs -f argus          # Argus server
-docker compose logs -f evolution-api  # WhatsApp bridge
-```
-
-| Container | Port | Purpose |
-|-----------|------|---------|
-| `argus-server` | 3000 | Express + WebSocket + Gemini AI + SQLite |
-| `argus-evolution` | 8080 | Evolution API — WhatsApp Web bridge |
-| `argus-postgres` | 5432 | PostgreSQL — Evolution API database |
-| `argus-redis` | 6379 | Redis — Evolution API cache |
-
-### 3. Load Chrome Extension
-
-1. Go to `chrome://extensions/`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked** → select `argus/extension/`
-4. Pin the Argus extension to your toolbar
-
-### 4. Connect WhatsApp
-
-Argus auto-creates and configures the Evolution API instance on startup. Just scan the QR code:
-
-```bash
-# Open Evolution API manager
-open http://localhost:8080/manager
-
-# Or check Argus logs for connection status
-docker compose logs -f argus | grep -i evolution
-```
-
-The instance name defaults to `arguas` (configurable via `EVOLUTION_INSTANCE_NAME` in `.env`).
-
-### Local Development (without Docker)
-
-```bash
-# You still need postgres + redis running for Evolution API
-# Only Argus itself runs locally
-
 cd argus
 npm install
-cp .env.example .env    # Set GEMINI_API_KEY + EVOLUTION_* vars
-npm run dev             # Starts with tsx hot reload on port 3000
+cp .env.example .env           # Fill in GEMINI_API_KEY + Elasticsearch credentials
+npm run dev                    # Hot-reload dev server on :3000
 ```
 
-> ⚠️ **NEVER restart the server manually** — it auto-restarts on rebuild. Only run `npx tsc` to compile.
-
----
-
-## 📁 Project Structure
+## Docker Architecture
 
 ```
-whatsapp-chat-rmd-argus/
-├── argus/                          # Main application
-│   ├── src/
-│   │   ├── server.ts               # Express + WebSocket server, all API routes
-│   │   ├── db.ts                   # SQLite + FTS5 — events, messages, contacts, triggers
-│   │   ├── evolution-db.ts         # PostgreSQL direct read — Evolution API messages
-│   │   ├── gemini.ts               # Gemini AI — extraction, action detection, popup blueprints, chat
-│   │   ├── quicksave.ts            # QuickSave CEP v9.1 — S2A filter + dense format compression
-│   │   ├── ingestion.ts            # Webhook → action detection → event extraction → triggers
-│   │   ├── matcher.ts              # URL keyword extraction + FTS5 search + Gemini validation
-│   │   ├── scheduler.ts            # Time-based reminders (24h, 1h, 15min) + snooze
-│   │   └── types.ts                # Zod schemas — Message, Event, Webhook, Config, PopupType
-│   ├── extension/                  # Chrome Extension (Manifest V3)
-│   │   ├── manifest.json           # Permissions: tabs, scripting, sidePanel, <all_urls>
-│   │   ├── background.js           # Service worker — WebSocket client, tab routing, context check
-│   │   ├── content.js              # Injected overlay — 8 popup types, toasts, DOM form watcher
-│   │   ├── styles.css              # Popup/modal CSS
-│   │   ├── sidepanel.html/js       # AI Chat sidebar with markdown rendering
-│   │   ├── popup.html/js/css       # Extension popup — event cards + stats
-│   │   └── icons/                  # Extension icons (16/32/48/128px)
-│   ├── tests/                      # Vitest — db.test.ts, ingestion.test.ts, matcher.test.ts
-│   ├── data/                       # SQLite database (events.db, auto-created)
-│   ├── docker-compose.yml          # 4-container stack
-│   ├── Dockerfile                  # Multi-stage Node 22 Alpine build
-│   ├── .env.example                # All config with defaults & comments
-│   ├── tsconfig.json
-│   ├── CHANGELOG.md                # Full version history
-│   └── package.json                # ESM, Node 22+, Express 5
-├── evolution-api/                  # WhatsApp API (forked, built from source)
-│   ├── Dockerfile                  # Multi-stage Node 24 Alpine
-│   └── src/                        # Evolution API source (Baileys-based)
-├── quicksave/                      # QuickSave CEP v9.1 reference (read-only)
-│   ├── SKILL.md                    # Full protocol specification
-│   └── references/                 # PDL, S2A, NCL, KANJI docs
-├── Insurance website/              # Demo ACKO clone for insurance mismatch scenario
-├── aidata/                         # Project context docs (read-only)
-├── RULES.md                        # Development rules & constraints
-├── INFO.md                         # Architecture documentation
-└── README.md                       # This file
+┌─────────────────────────────────────────────────────┐
+│                  docker compose                      │
+│                                                      │
+│  ┌──────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │ postgres │←─│ evolution-api │←─│    argus      │  │
+│  │ :5432    │  │ :8080         │  │ :3000         │  │
+│  └──────────┘  └──────────────┘  └───────┬───────┘  │
+│  ┌──────────┐        ↑                   │          │
+│  │  redis   │────────┘                   │ WS+HTTP  │
+│  │ :6379    │                            │          │
+│  └──────────┘                            ▼          │
+│                               Chrome Extension      │
+└─────────────────────────────────────────────────────┘
 ```
 
----
-
-## ✨ Features
-
-### 🎨 8 Popup Types
-
-All popups are generated server-side by Gemini AI — the extension just renders whatever the server sends.
-
-| Type | Icon | Trigger |
-|------|------|---------|
-| `event_discovery` | 📅 | New event extracted from WhatsApp message |
-| `event_reminder` | ⏰ | Scheduled time arrives (24h / 1h / 15min before) |
-| `context_reminder` | 🎯 | User visits a URL matching an event's context |
-| `conflict_warning` | 🗓️ | Two events overlap in time (±60 min window) |
-| `insight_card` | 💡 | AI suggestion from conversation patterns |
-| `snooze_reminder` | 💤 | Snoozed event fires again after delay |
-| `update_confirm` | 📝 | WhatsApp message modifies an existing event — needs approval |
-| `form_mismatch` | ⚠️ | DOM form field contradicts WhatsApp memory (insurance scenario) |
-
-### 🔄 Event Lifecycle
-
-```
-    ┌── snoozed ──┐
-    │             │
-discovered → scheduled → reminded → completed
-    │                        │
-    └── ignored          expired
-```
-
-- **discovered** — new event, waiting for user action
-- **scheduled** — user approved, reminders set at 24h / 1h / 15min
-- **snoozed** — postponed for N minutes
-- **reminded** — reminder was shown
-- **completed** — user marked done
-- **ignored** — hidden, won't remind again
-- **expired** — event time has passed
-- **dismissed** — notification dismissed (can reappear on context trigger)
-
-### 🎯 Action Detection
-
-When a WhatsApp message references an existing event, Gemini detects the action:
-
-| Action | Example Message | What Happens |
-|--------|----------------|--------------|
-| `cancel` / `delete` | "cancel the dinner plan" | Event deleted |
-| `complete` | "done with the cashews order" | Event marked complete |
-| `ignore` | "skip the meeting" | Event hidden |
-| `snooze` / `postpone` | "push the meeting to next week" | Event snoozed |
-| `modify` | "change dinner to Friday 9pm" | Confirmation popup shown |
-
-### 🔍 Context-Aware Triggers
-
-| Category | How It Works |
-|----------|-------------|
-| **Subscriptions** | "cancel netflix" → `context_url=netflix` → popup on netflix.com |
-| **Travel** | "cashews at Zantye's in Goa" → `context_url=goa` → popup on Goa travel sites |
-| **Shopping/Gifts** | Beauty → nykaa, Fashion → myntra, General → amazon URL triggers |
-| **Insurance** | DOM form watcher parses car make/model/year, cross-references with chat memory |
-| **Calendar** | Time conflicts detected within ±60 min window |
-
-### 🧠 Smart Event Extraction (Gemini)
-
-- Single Gemini call per message — classifies + extracts in one shot
-- Handles Hinglish (Hindi + English), typos, informal chat
-- Aggressive spam filter: price mentions, forwarded deals, brand accounts → low confidence
-- Date resolution: relative dates ("kal", "Thursday", "next week") → absolute timestamps
-- Event CRUD: Gemini detects if message creates, updates, or merges with existing events
-- Context window: last 5 messages from same chat included for conversation continuity
-
-### 📦 QuickSave Context Compression (CEP v9.1)
-
-All Gemini prompts use [QuickSave](https://github.com/ktg-one/quicksave)-inspired compression:
-
-- **S2A Filter** — ranks events by signal (time proximity, status, recency) → top 60 sent
-- **Dense Format** — `#ID|TYPE|STATUS|"Title"|time|loc|sender|keywords` (~40-55% fewer tokens)
-- **L2 Edge Detection** — cross-event relationships (cancel↔subscription, time conflicts, topic overlap)
-- **Chat Memory** — older sidebar turns compressed into key facts, recent 6 turns stay raw
-- Same token budget carries **~2x more event information**
-
-### 🏥 DOM Form Watcher (Insurance Accuracy)
-
-- Detects insurance-like pages (ACKO, PolicyBazaar, Digit, etc.)
-- `MutationObserver` watches for dynamically added form inputs
-- `input` event listeners with 1.5s debounce on all text fields
-- Regex parser extracts car make/model/year from input values
-- Calls `/api/form-check` → cross-references with WhatsApp chat memory
-- "✏️ Fix It" button auto-fills the correct value + green highlight
-
----
-
-## 📡 API Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/health` | GET | Health check (DB, Evolution API, model info) |
-| `/api/stats` | GET | Message/event/contact statistics |
-| `/api/events` | GET | List events (filter by `?status=discovered`) |
-| `/api/events/:id` | PATCH | Update event fields (title, time, location, etc.) |
-| `/api/events/:id` | DELETE | Delete event permanently |
-| `/api/events/:id/set-reminder` | POST | Schedule event (discovered → scheduled) |
-| `/api/events/:id/snooze` | POST | Snooze event for N minutes |
-| `/api/events/:id/ignore` | POST | Ignore event (hide, won't remind) |
-| `/api/events/:id/complete` | POST | Mark event as done |
-| `/api/events/:id/dismiss` | POST | Dismiss notification (can reappear) |
-| `/api/events/:id/acknowledge` | POST | Acknowledge a reminder |
-| `/api/events/:id/confirm-update` | POST | Confirm a pending modify action |
-| `/api/events/day/:timestamp` | GET | Get all events for a specific day |
-| `/api/webhook/whatsapp` | POST | Evolution API webhook receiver |
-| `/api/context-check` | POST | Check URL for matching events |
-| `/api/extract-context` | POST | Extract keywords from URL |
-| `/api/form-check` | POST | Check form field vs WhatsApp memory |
-| `/api/chat` | POST | AI Chat — context-aware conversation |
-| `/ws` | WS | Real-time event notifications |
-
-### Webhook Payload (Evolution API → Argus)
-
-```json
-{
-  "event": "messages.upsert",
-  "instance": "arguas",
-  "data": {
-    "key": {
-      "remoteJid": "919876543210@s.whatsapp.net",
-      "fromMe": false,
-      "id": "3EB0ABC123..."
-    },
-    "pushName": "Rahul",
-    "message": {
-      "conversation": "Let's meet tomorrow at 5pm at Starbucks"
-    },
-    "messageTimestamp": 1739097600
-  }
-}
-```
-
-Only `messages.upsert` events are processed. All other events (`messages.update`, `connection.update`, etc.) are acknowledged but skipped.
-
----
-
-## 🏗️ Tech Stack
-
-| Layer | Technology | Version | Purpose |
-|-------|-----------|---------|---------|
-| Runtime | Node.js | 22.x | ESM JavaScript runtime |
-| Language | TypeScript | 5.7.x | Type-safe development |
-| Web Server | Express.js | 5.x | HTTP + WebSocket server |
-| Database | SQLite (better-sqlite3) | 11.x | Event/message storage + FTS5 search |
-| AI | Gemini 3 Flash Preview | Latest | Event extraction, popups, chat |
-| WhatsApp | Evolution API | v2.3.7 | WhatsApp Web bridge (Baileys) |
-| Evolution DB | PostgreSQL | 16 | Evolution API storage (direct read) |
-| Cache | Redis | 7 | Evolution API cache |
-| Validation | Zod | 3.24.x | Runtime schema validation |
-| Real-time | ws | 8.x | WebSocket server |
-| Browser | Chrome Extension | Manifest V3 | Popups, URL detection, form watching |
-| Compression | QuickSave CEP | v9.1 | S2A + dense format for Gemini prompts |
-| Testing | Vitest | 2.x | Fast unit tests (<3s) |
-| Containers | Docker Compose | — | 4-service stack |
-
-### What We're NOT Using
-
-| ❌ | Why |
-|----|-----|
-| FAISS / vector stores | FTS5 + Gemini validation is sufficient (90%+ accuracy) |
-| OpenAI / embeddings | Gemini handles everything — extraction, validation, chat |
-| RAG pipelines | Two-step FTS5 → Gemini replaces traditional RAG |
-| Multi-stage LLM calls | Single Gemini call per message (classify + extract) |
-
----
-
-## 🐳 Docker Architecture
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    Docker Compose Network                      │
-│                                                                │
-│  ┌──────────────┐    ┌──────────────────┐                     │
-│  │   postgres    │    │      redis       │                     │
-│  │  :5432        │    │     :6379        │                     │
-│  └──────┬───────┘    └────────┬─────────┘                     │
-│         │                     │                                │
-│         ▼                     ▼                                │
-│  ┌──────────────────────────────────────┐                     │
-│  │      evolution-api :8080             │ ◄── WhatsApp QR     │
-│  │   WhatsApp Bridge (Baileys/Node 24)  │                     │
-│  └──────────────┬───────────────────────┘                     │
-│                 │ webhook POST + direct PG read                │
-│                 ▼                                              │
-│  ┌──────────────────────────────────────┐                     │
-│  │         argus :3000                  │ ◄── Chrome Ext (WS) │
-│  │   Express + WebSocket + Gemini AI    │                     │
-│  │   SQLite + FTS5 (internal volume)    │                     │
-│  └──────────────────────────────────────┘                     │
-│                                                                │
-└──────────────────────────────────────────────────────────────┘
-```
+| Container | Image | Purpose |
+|-----------|-------|---------|
+| `argus-server` | Built from `./Dockerfile` | Express server, Gemini AI, Elasticsearch, WebSocket |
+| `argus-evolution` | Built from `../evolution-api/Dockerfile` | WhatsApp bridge (Evolution API v2.3) |
+| `argus-postgres` | `postgres:16-alpine` | Evolution API database |
+| `argus-redis` | `redis:7-alpine` | Evolution API cache |
 
 ### Docker Commands
 
 ```bash
-cd argus
-
-docker compose up -d --build        # Build & start all 4 containers
-docker compose ps                   # Check status
-docker compose logs -f argus        # Argus logs
+docker compose up -d               # Start all 4 containers
+docker compose up -d --build       # Rebuild + start
+docker compose logs -f argus       # Argus logs
 docker compose logs -f evolution-api # Evolution logs
-docker compose down                 # Stop
-docker compose down -v              # Stop + delete all data
-docker compose build argus          # Rebuild Argus only
-docker compose up -d argus          # Restart Argus only
+docker compose down                # Stop
+docker compose down -v             # Stop + delete all data
+docker compose ps                  # Status
 ```
 
-### Environment Variables
+## Project Structure
 
-All config is in `.env` (copy from `.env.example`). Only `GEMINI_API_KEY` is required — everything else has sensible defaults.
+```
+argus-whatsapp-assistant/           # ← Clone this repo
+├── argus/                          # Main application
+│   ├── src/
+│   │   ├── server.ts               # Express + WebSocket server, all API routes
+│   │   ├── elastic.ts              # Elasticsearch — all DB operations, hybrid search
+│   │   ├── gemini.ts               # Gemini AI — extraction, popup blueprints, chat
+│   │   ├── ingestion.ts            # WhatsApp message processing pipeline
+│   │   ├── ai-tier.ts              # AI fallback tier manager (Tier 1/2/3)
+│   │   ├── fallback-heuristics.ts  # Tier 2 — regex/pattern replacements for Gemini
+│   │   ├── response-cache.ts       # Tier 3 — LRU response cache
+│   │   ├── embeddings.ts           # Gemini embedding generation (768-dim)
+│   │   ├── backup.ts               # Export/import/prune backup logic
+│   │   ├── quicksave.ts            # QuickSave CEP v9.1 — context compression
+│   │   ├── matcher.ts              # URL pattern matching for context triggers
+│   │   ├── scheduler.ts            # Time-based reminders + snooze + daily backup
+│   │   ├── evolution-db.ts         # Direct PostgreSQL read for message history
+│   │   ├── errors.ts               # Typed error classes
+│   │   └── types.ts                # Zod schemas + config parser
+│   ├── extension/                  # Chrome Extension (Manifest V3)
+│   │   ├── manifest.json           # <all_urls> content scripts
+│   │   ├── background.js           # WebSocket, API calls, context checks
+│   │   ├── content.js              # Popup overlays (8 types), DOM form watcher
+│   │   ├── sidepanel.html/js       # AI Chat sidebar
+│   │   ├── popup.html/js           # Extension popup with stats + backup export
+│   │   └── icons/                  # Extension icons
+│   ├── tests/                      # Vitest tests
+│   ├── data/backups/               # Daily backup files (argus-backup-YYYY-MM-DD.json)
+│   ├── Dockerfile                  # Multi-stage Node 22 Alpine
+│   ├── docker-compose.yml          # Full stack (4 containers)
+│   └── .env.example                # Environment template
+├── evolution-api/                  # WhatsApp Bridge (included, builds from source)
+│   ├── src/                        # Evolution API v2.3.7 source
+│   ├── Dockerfile                  # Node 24 Alpine build
+│   ├── prisma/                     # Database schema
+│   └── docker-compose.yaml         # (Not used — we use argus/docker-compose.yml)
+└── quicksave/                      # QuickSave CEP v9.1 (reference spec)
+    ├── SKILL.md                    # Full protocol specification
+    └── references/                 # PDL, S2A, NCL, expert docs
+```
 
-| Variable | Default | Required | Description |
-|----------|---------|----------|-------------|
-| `GEMINI_API_KEY` | — | ✅ | Google AI Studio API key |
-| `GEMINI_MODEL` | `gemini-3-flash-preview` | — | Gemini model ID |
-| `EVOLUTION_API_KEY` | `rmd_evolution_api_key_12345` | — | Evolution API auth key |
-| `EVOLUTION_INSTANCE_NAME` | `arguas` | — | WhatsApp instance name |
-| `HOT_WINDOW_DAYS` | `90` | — | Context matching window (days) |
-| `PROCESS_OWN_MESSAGES` | `true` | — | Process your own sent messages |
-| `SKIP_GROUP_MESSAGES` | `false` | — | Skip group chat messages |
-| `POSTGRES_PASSWORD` | `postgres` | — | PostgreSQL password |
-| `TIMEZONE` | `Asia/Kolkata` | — | Server timezone |
+## Development Commands
 
----
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start dev server with hot reload |
+| `npm run build` | Build TypeScript → `dist/` |
+| `npm start` | Run production server |
+| `npm test` | Run tests (~2s, Vitest) |
+| `npm run lint` | Lint code (ESLint, cached) |
+| `npm run format` | Format code (Prettier) |
+| `npm run typecheck` | Type-check without emitting |
 
-## 📊 Performance
+## Chrome Extension Setup
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Message ingestion | <500ms | Single Gemini call (classify + extract) |
-| Context check | <800ms | FTS5 query <10ms + Gemini validation ~800ms |
-| Database query | <10ms | SQLite FTS5 on 50k+ messages |
-| Memory usage | <200MB | SQLite + Node runtime per container |
-| WebSocket latency | <50ms | Event → browser overlay |
-| Form mismatch check | <100ms | Regex parse + SQLite keyword search |
-| Gemini cost/message | ~$0.0001 | Flash Preview pricing |
-| Gemini cost/context check | ~$0.0003 | 10 candidates validated |
-| QuickSave compression | ~2x density | 40-55% fewer tokens per prompt |
+1. Open `chrome://extensions/`
+2. Enable **Developer mode**
+3. Click **Load unpacked** → select `extension/` folder
+4. (For local `file://` testing) → Enable **Allow access to file URLs**
 
----
+## API Endpoints
 
-## 🧪 Development
+### Core
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Health check (includes `aiTier`, `aiTierMode`) |
+| `/api/stats` | GET | Event and message statistics |
+| `/api/ai-status` | GET | AI tier status, cooldown, cache stats |
+
+### Events
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/events` | GET | List events (filter by `?status=`) |
+| `/api/events/:id` | GET | Get single event |
+| `/api/events/:id` | PATCH | Update event fields |
+| `/api/events/:id` | DELETE | Delete event |
+| `/api/events/:id/set-reminder` | POST | Schedule event reminder |
+| `/api/events/:id/snooze` | POST | Snooze for X minutes |
+| `/api/events/:id/ignore` | POST | Ignore event |
+| `/api/events/:id/complete` | POST | Mark done |
+| `/api/events/:id/done` | POST | Mark done (alias) |
+| `/api/events/:id/dismiss` | POST | Dismiss notification |
+| `/api/events/:id/acknowledge` | POST | Acknowledge reminder |
+| `/api/events/:id/confirm-update` | POST | Confirm pending update |
+| `/api/events/:id/context-url` | POST | Set context URL for event |
+| `/api/events/day/:timestamp` | GET | Get all events for a day |
+| `/api/events/status/:status` | GET | Get events by status |
+
+### WhatsApp / Messages
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/messages` | GET | List stored messages |
+| `/api/whatsapp/messages` | GET | Messages from Evolution API |
+| `/api/whatsapp/search` | GET | Search messages (`?q=`) |
+| `/api/whatsapp/contacts` | GET | Contact list |
+| `/api/whatsapp/chats` | GET | Chat list |
+| `/api/whatsapp/instances` | GET | Evolution API instance status |
+| `/api/whatsapp/stats` | GET | WhatsApp message statistics |
+
+### Context & AI
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/context-check` | POST | Check URL for matching events (hybrid kNN + BM25) |
+| `/api/form-check` | POST | Check form field mismatch against memory |
+| `/api/extract-context` | POST | Extract context from URL |
+| `/api/chat` | POST | AI Chat — context-aware conversation |
+
+### Backup
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/backup/export` | GET | Download full backup as JSON |
+| `/api/backup/list` | GET | List available backup files |
+| `/api/backup/import` | POST | Import backup from JSON body |
+| `/api/backup/restore/:filename` | POST | Restore from a saved backup file |
+
+### Webhook & WebSocket
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/webhook/whatsapp` | POST | Evolution API webhook receiver |
+| `/ws` | WebSocket | Real-time notifications to extension |
+
+## How It Works
+
+```
+WhatsApp Message → Evolution API → Webhook → Argus Server
+                                                  │
+                                         Gemini AI (Tier 1)
+                                         or Heuristics (Tier 2)
+                                         or Safe Default (Tier 3)
+                                        extracts events/tasks/reminders
+                                                  │
+                                     Elasticsearch Serverless stores,
+                                      indexes + generates embeddings
+                                                  │
+                                   ┌──────────────┼──────────────┐
+                                   │              │              │
+                              WebSocket      URL Match      DOM Watch
+                              (new event)   (context)      (form field)
+                                   │              │              │
+                                   └──────────────┼──────────────┘
+                                                  │
+                                          Chrome Extension
+                                         shows popup overlay
+```
+
+### AI Fallback Tier System
+
+Argus automatically downgrades when Gemini is unavailable:
+
+| Tier | Condition | Behavior |
+|------|-----------|----------|
+| **1** | Normal operation | Gemini AI (full accuracy) |
+| **2** | 1+ failures, cooldown active | Regex/pattern heuristics |
+| **3** | 10+ consecutive failures | Safe defaults (`{events: []}`) |
+
+Cooldown schedule: 1 failure → 30s, 3 consecutive → 5min, 10 consecutive → 15min. Recovery to Tier 1 is immediate on any success.
+
+## Elasticsearch
+
+Argus uses **Elasticsearch Serverless** (cloud ID + API key auth) as its sole database. All six indices are created automatically on startup if they don't exist.
+
+### Indices
+
+| Index | Purpose |
+|-------|---------|
+| `argus-events` | Events/tasks/reminders extracted from WhatsApp |
+| `argus-messages` | Raw WhatsApp messages (source of truth) |
+| `argus-triggers` | Time and URL-based notification triggers |
+| `argus-contacts` | Contact list with message counts |
+| `argus-context-dismissals` | Per-URL dismissal suppression (30-minute window) |
+| `argus-push-subscriptions` | Browser push subscription tokens |
+
+### Events Index Mapping
+
+The `argus-events` index stores a `dense_vector` field (768 dimensions, cosine similarity) alongside standard text/keyword fields. This enables hybrid search. Key fields:
+
+```
+title        — text (+ keyword sub-field, boosted ×3 in search)
+keywords     — text (+ keyword sub-field, boosted ×2 in search)
+description  — text
+location     — text + keyword
+event_type   — keyword
+status       — keyword
+embedding    — dense_vector (768 dims, cosine similarity, indexed for kNN)
+event_time   — long (Unix timestamp)
+reminder_time — long (Unix timestamp)
+context_url  — keyword (URL pattern for context triggers)
+```
+
+### Hybrid Search (kNN + BM25)
+
+`/api/context-check` and `/api/chat` use `hybridSearchEvents()` which combines:
+
+- **kNN** — vector search over the `embedding` field (`num_candidates: 50`)
+- **BM25** — `multi_match` across `title^3`, `keywords^2`, `description`, `location`
+
+When both are present Elasticsearch merges scores via **Reciprocal Rank Fusion (RRF)**. If an event has no embedding (e.g. generated during a Gemini outage), it participates in BM25-only and gets an embedding on the next backfill run.
+
+### ID Counters
+
+Elasticsearch Serverless has no auto-increment. Argus uses in-memory integer counters seeded at startup by running a `max` aggregation on the `id` field of `argus-events` and `argus-triggers`. After a backup restore, counters are reinitialized to prevent collisions.
+
+### Write Safety
+
+All writes use `safeAsync` from `errors.ts`. A failed write is caught, logged, and its payload appended to `data/dead-letter.jsonl` for manual recovery. The dead-letter file auto-rotates to `.old` at 10 MB.
+
+## Search Fallback
+
+When Gemini embeddings are unavailable, search degrades gracefully instead of failing.
+
+### Fallback Chain
+
+```
+1. hybridSearchEvents(queryText, queryVector)
+   ├── queryVector != null → kNN + BM25 merged via RRF   (full semantic match)
+   └── queryVector == null → BM25 only                   (keyword match, still useful)
+
+2. searchEventsByKeywords(keywords[])
+   ├── Try exact location match per keyword first
+   └── Multi-match: title^3 · keywords^2 · description · location  (fuzziness: AUTO)
+```
+
+### Embedding Backfill
+
+Events created during a Gemini outage have `embedding: null`. A background job running every 5 minutes calls `getEventsWithoutEmbeddings()` and calls `generateEmbedding()` for each, storing the result with `updateEventEmbedding()`. BM25 search continues to work for these events in the meantime.
+
+## API Error Handling
+
+All error handling is centralized in `src/errors.ts`.
+
+### Custom Error Classes
+
+| Class | Fields | Retryable |
+|-------|--------|-----------|
+| `TimeoutError` | `message` | Yes — always |
+| `GeminiApiError` | `status`, `retryable` | Yes if 5xx or 429; No if 4xx |
+| `ElasticError` | `operation`, `index` | No (handled by `safeAsync`) |
+
+### `fetchWithTimeout`
+
+Wraps `fetch()` with an `AbortController` deadline (default 30 s). Throws `TimeoutError` on expiry and cleans up the timer on success.
+
+### `withRetry`
+
+Retries an async operation with exponential backoff:
+
+| Attempt | Timeout | Delay before retry |
+|---------|---------|--------------------|
+| 1st | 30 s | — |
+| 2nd (retry) | 15 s | 500 ms |
+
+Max 1 retry by default (total budget ≤ 45 s). Only retries on `TimeoutError`, `GeminiApiError` (retryable), or network errors (`ECONNREFUSED`, `ENOTFOUND`, `fetch failed`, `socket hang up`, `ETIMEDOUT`). Never retries 4xx client errors.
+
+### `safeAsync`
+
+Catch-and-fallback wrapper used on all Elasticsearch writes. Returns a safe fallback value on failure so the server never crashes on a write error. Set `DEBUG_ERRORS=true` to re-throw instead (surfaces bugs during development).
+
+### Dead-Letter Log
+
+Failed writes are appended to `data/dead-letter.jsonl` (one JSON object per line). Each entry contains the operation name, original payload, error message, and stack trace. The file auto-rotates to `dead-letter.jsonl.old` when it exceeds 10 MB.
+
+## Scheduler Retry
+
+The scheduler (`src/scheduler.ts`) guarantees at-least-once delivery of notifications to the Chrome extension.
+
+### Retry Queue
+
+When `notifyCallback` (WebSocket broadcast) throws or the extension is disconnected, the notification is placed in an in-memory retry queue with exponential backoff:
+
+| Attempt | Delay |
+|---------|-------|
+| 1st retry | 1 minute |
+| 2nd retry | 5 minutes |
+| 3rd retry | 15 minutes |
+
+The queue is drained every 30 seconds (piggybacked on the reminder check interval). On success the associated `markFn` (e.g. `markTriggerFired`, `markEventReminded`) is called to prevent re-firing.
+
+### Permanent Failure
+
+After 3 failed attempts the notification is dropped from the queue and its details appended to `data/failed-reminders.jsonl` for manual review. Failed reminder counts are exposed via `GET /api/ai-status`.
+
+### Scheduler Intervals
+
+| Task | Interval |
+|------|----------|
+| Time triggers | Every 60 s (configurable) |
+| Due reminders + retry queue | Every 30 s |
+| Snoozed events | Every 30 s |
+| Daily backup | 60 s after start, then every 24 h |
+
+## Database Backup
+
+Argus automatically exports all Elasticsearch data to local JSON files daily.
+
+### Automatic Backup
+
+The scheduler runs `runDailyBackup()` 60 seconds after startup, then every 24 hours. Old backups beyond `BACKUP_RETENTION_DAYS` (default 7) are pruned automatically after each run.
+
+### Backup Format
+
+```json
+{
+  "version": "1.0",
+  "exportedAt": "2026-02-26T00:00:00.000Z",
+  "source": "argus-elastic",
+  "counts": { "events": 120, "messages": 3400, ... },
+  "indices": { "events": [...], "messages": [...], ... }
+}
+```
+
+The `embedding` field is excluded from all exports — it is large and can be regenerated via the backfill job. The `counts` object is placed before `indices` in the JSON so `GET /api/backup/list` can extract record counts by reading only the first 400 bytes of each file (no full parse needed).
+
+### Import Modes
+
+| Mode | Behavior |
+|------|----------|
+| `merge` | Upserts documents — existing records are updated, new ones created |
+| `replace` | Clears each index first (`deleteByQuery`), then bulk-indexes |
+
+After import, ID counters are reinitialized via a `max` aggregation to prevent collisions with new events.
+
+### Manual Backup via Extension
+
+The extension popup has an **Export Backup** button that triggers `GET /api/backup/export` and downloads the JSON file directly to the browser.
+
+## Working Scenarios
+
+### 1. Travel Recommendations (Goa Cashews)
+```
+"Rahul recommended cashews at Zantye's in Goa"
+User visits goatourism.com
+Popup: "Rahul's Recommendation — Remember the cashews at Zantye's?"
+```
+
+### 2. Insurance Accuracy (Form Mismatch)
+```
+User owns Honda Civic 2018 (from WhatsApp chats)
+User visits ACKO and types "Honda Civic 2022"
+Popup: "Hold on — you own a Honda Civic 2018! You might be overpaying!"
+"Fix It" button auto-fills the correct value
+```
+
+### 3. Gift Intent (E-commerce)
+```
+"Need to buy makeup for sis birthday"
+User visits Nykaa
+Popup: "Sale going on! You mentioned wanting makeup for your sister"
+```
+
+### 4. Subscription Cancel (Netflix)
+```
+"Want to cancel my Netflix this week"
+User visits netflix.com
+Popup: "You planned to cancel your Netflix subscription"
+```
+
+### 5. Calendar Conflict Detection
+```
+"Meeting tomorrow at 5pm"
+"Call with John tomorrow at 5pm"
+Popup: "You might be double-booked" + View My Day timeline
+```
+
+## Popup Types (8)
+
+| Type | Trigger |
+|------|---------|
+| `event_discovery` | New event detected from WhatsApp |
+| `event_reminder` | Time-based (24h, 1h, 15min before) |
+| `context_reminder` | URL matches event context |
+| `conflict_warning` | Overlapping events detected |
+| `insight_card` | Suggestions from conversations |
+| `snooze_reminder` | Snoozed event fires again |
+| `update_confirm` | Confirm event modification |
+| `form_mismatch` | Form input doesn't match memory |
+
+## Configuration
+
+Copy `.env.example` to `.env` and set:
 
 ```bash
-cd argus
+# ─── Required ──────────────────────────────────────
+GEMINI_API_KEY=your_gemini_api_key_here
 
-npm run dev          # Start with tsx hot reload
-npm test             # Fast tests (~2s, Vitest)
-npm run build        # Compile TypeScript (npx tsc)
-npm run typecheck    # Type check only (no emit)
-npm run lint         # ESLint with cache
-npm run lint:fix     # Auto-fix lint issues
-npm run format       # Prettier formatting
-npm run db:reset     # Delete SQLite DB + restart
+# ─── Elasticsearch Serverless (Required) ───────────
+ELASTIC_CLOUD_ID=your_cloud_id_here
+ELASTIC_API_KEY=your_api_key_here
+
+# ─── Gemini (optional — defaults shown) ────────────
+GEMINI_MODEL=gemini-3-flash-preview
+GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+
+# ─── Evolution API / WhatsApp ──────────────────────
+EVOLUTION_API_KEY=rmd_evolution_api_key_12345
+EVOLUTION_INSTANCE_NAME=argaus
+
+# ─── AI Fallback Tier (optional) ───────────────────
+AI_TIER_MODE=auto              # auto | tier1_only | tier2_only | tier3_only
+AI_COOLDOWN_BASE_SEC=30        # base cooldown after first failure
+AI_CACHE_TTL_SEC=3600          # Tier 3 cache TTL (seconds)
+AI_CACHE_MAX_SIZE=500          # Tier 3 LRU cache entries
+
+# ─── Backup (optional) ─────────────────────────────
+BACKUP_RETENTION_DAYS=7        # days to keep daily backups
 ```
 
-### Key Rules
+## Performance
 
-- **NEVER restart the server** — it auto-restarts on rebuild. Only run `npx tsc`.
-- **ALWAYS update CHANGELOG.md** before committing (append at top).
-- **DO NOT use OpenAI** — Gemini only (via OpenAI-compatible endpoint).
-- **DO NOT edit `aidata/*` or `quicksave/*`** — reference-only files.
-- SQLite + FTS5 only — no vectors, no FAISS, no embeddings.
+| Metric | Value |
+|--------|-------|
+| Message ingestion | <500ms |
+| Context check (hybrid) | <800ms |
+| Elasticsearch query | <50ms |
+| Memory usage | <200MB |
+| Test suite | ~2s |
 
----
+## Testing
 
-## 📝 Changelog
+```bash
+npm test              # Run all tests
+npm run test:watch    # Watch mode
+npm run test:coverage # With coverage
+```
 
-See [CHANGELOG.md](argus/CHANGELOG.md) for full version history.
+## License
 
-### Latest: v2.7.1 (2026-02-09)
-
-**Bug Fixes:**
-- Fixed `autoSetupEvolution()` — wrong fetchInstances response format + 403 handling
-- Fixed action `"none"` swallowing messages — Gemini returning `isAction: true, action: "none"` blocked event extraction
-- Fixed dedup false positives — short titles ("Meeting") no longer substring-match longer ones ("Meeting with Nityam at 5pm")
-- Ignored/dismissed events no longer sent to Gemini as context
-- PopupTypeEnum updated to include all 8 popup types
-
-### v2.7.0 (2026-02-08)
-
-**QuickSave Context Compression:**
-- S2A filter + dense format for all Gemini prompts (~40-55% fewer tokens)
-- L2 edge detection (cross-event relationships)
-- Chat memory packets for session continuity
-
-### v2.6.5 (2026-02-07)
-
-**Insurance Accuracy (Form Mismatch):**
-- DOM form watcher detects car model on insurance sites
-- Cross-references with WhatsApp memory
-- "Fix It" button auto-fills correct value
-
----
-
-## 🙏 Acknowledgments
-
-- [Evolution API](https://github.com/EvolutionAPI/evolution-api) — WhatsApp Web integration
-- [Google Gemini](https://ai.google.dev/) — AI extraction, popups, chat
-- [SQLite FTS5](https://www.sqlite.org/fts5.html) — Full-text search engine
-- [QuickSave CEP v9.1](https://github.com/ktg-one/quicksave) — Context compression protocol by Kevin Tan (ktg.one)
-- Chrome Extension Manifest V3 — Browser integration
-
----
-
-## 📄 License
-
-Private — All rights reserved.
+MIT — see [LICENSE](../LICENSE) for details.
