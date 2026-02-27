@@ -2,6 +2,9 @@
 
 AI-powered WhatsApp assistant that learns from your conversations, detects events, and reminds you at the right moment — while you browse. Refer argus/ARCH.md for detailed architecture.
 
+## Check out our website
+https://argus-jet-five.vercel.app/
+
 ## Quick Start
 
 ### Docker (Recommended — works on Linux / Windows / macOS)
