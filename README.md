@@ -10,7 +10,7 @@ https://argus-jet-five.vercel.app/
 ### Docker (Recommended — works on Linux / Windows / macOS)
 
 ```bash
-git clone https://github.com/nityam2007/argus-whatsapp-assistant.git
+git clone https://github.com/Akshat74747/Argus-whatsapp-assistant-elastic.git
 cd argus-whatsapp-assistant/argus
 cp .env.example .env          # Fill in GEMINI_API_KEY + Elasticsearch credentials
 docker compose up -d           # Starts 4 containers (builds everything from source)
